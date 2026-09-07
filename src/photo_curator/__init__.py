@@ -18,7 +18,7 @@ from photo_curator.scoring import (
 from photo_curator.selection import filter_near_duplicates
 from photo_curator.storage import copy_top_images, export_scores_csv
 
-__version__ = "1.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "ScoredImage",

@@ -90,14 +90,16 @@ pip install -e ".[all,dev]"
 All unit tests run fast in-memory using mocked neural network models with zero network overhead:
 
 ```bash
-# Run the complete test suite
+# Run the complete test suite (via pytest or uv)
 pytest -v
+# or with uv:
+uv run pytest -v
 
-# Run a specific test class or method
-pytest test_album_selector.py -k "TestFilterNearDuplicates" -v
+# Run a specific test module or method
+pytest tests/test_selection.py -k "TestFilterNearDuplicates" -v
 
-# Check for syntax errors across all files
-python3 -m py_compile album_selector.py test_album_selector.py
+# Check for syntax errors across all modules
+python3 -m py_compile album_selector.py $(find src tests -name "*.py")
 ```
 
 Ensure all tests pass cleanly with **zero failures** and **zero new warnings** before opening a pull request.

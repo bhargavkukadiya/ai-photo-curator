@@ -44,7 +44,7 @@
 - 💾 **Memory-Efficient Batch Ingestion**: Downsamples high-resolution photos (48MP/60MP) after decode, reducing dual-buffer working RAM from ~288 MB to ~4.72 MB per image (~151 MB for a batch of 32) to prevent batch memory accumulation.
 - 🚀 **Hardware Accelerated**: Native zero-configuration acceleration for Apple Silicon (`mps`), NVIDIA GPUs (`cuda`), and multi-core `cpu`.
 - 📊 **Actionable Dry-Run & CSV Previews**: Preview rankings with explicit status annotations (`Selected`, `Duplicate_Suppressed`, `Rank_Cutoff`) before executing file copies.
-- 🧪 **Comprehensive In-Memory Test Suite**: 87 unit tests running in under 3 seconds with mocked neural models.
+- 🧪 **Comprehensive In-Memory Test Suite**: 95 unit tests running in under 3 seconds with mocked neural models.
 
 ---
 
@@ -74,14 +74,17 @@ flowchart TD
     CHECK -- "No (Distinct Photo)" --> SELECT["Candidate Selected<br/>Top Ranked within Target"]
 
     %% Storage Stage
-    SELECT --> STAGE["Two-Phase Staging<br/>Isolate in .curator_stage_*/"]
+    SELECT --> LOCK["Exclusive Album Lock<br/>Atomic .*.curator.lock"]
+    LOCK -- "Contended" --> REJECT["Reject Overlapping Writer<br/>Fail Fast Before Reading"]
+    LOCK -- "Acquired" --> STAGE["Two-Phase Staging<br/>Isolate in .curator_stage_*/"]
     STAGE --> BACKUP["Manifest Snapshot<br/>Backup .curator_manifest.json"]
     BACKUP --> COMMIT["Atomic Link / Stream Copy<br/>os.link with O_CREAT fallback"]
 
     COMMIT --> MANIFEST["Atomic Manifest Commit<br/>Swap Updated Manifest"]
-    COMMIT -. "On Error" .-> ROLLBACK["Automatic Rollback<br/>Purge Staging & Restore Backups"]
+    COMMIT -. "On Error / Ctrl-C" .-> ROLLBACK["Automatic Rollback<br/>Purge Staging & Restore Backups"]
 
-    MANIFEST --> OUT["🎉 Curated Output Album<br/>Selected Photos & preview.csv"]
+    MANIFEST --> UNLOCK["Release Lock & Write CSV<br/>rmdir Lock & Output preview.csv"]
+    UNLOCK --> OUT["🎉 Curated Output Album<br/>Selected Photos & Manifest"]
 
     %% Modern Theme Styling
     classDef default fill:#161b22,stroke:#30363d,stroke-width:1.5px,color:#e6edf3;
@@ -93,9 +96,9 @@ flowchart TD
 
     class RAW source;
     class TECH,AES,EMO,FUSION scoring;
-    class CHECK decision;
-    class SELECT,MANIFEST,OUT success;
-    class SUPPRESS,ROLLBACK failure;
+    class CHECK,LOCK decision;
+    class SELECT,MANIFEST,UNLOCK,OUT success;
+    class SUPPRESS,REJECT,ROLLBACK failure;
 ```
 
 ---
@@ -104,13 +107,13 @@ flowchart TD
 
 Photo Curator includes vectorized PyTorch batch operations and ingestion memory downscaling designed for large photo libraries (DSLR, Mirrorless, and modern smartphones):
 
-| Operation / Metric | Previous Baseline | Optimized (v1.1.0) | Notes |
+| Operation / Metric | Previous Baseline | Optimized (v1.0.0) | Notes |
 |---|---|---|---|
 | **Burst Deduplication (5,000 photos)** | `4.245s` (Scalar loop) | **`0.114s`** (Vectorized) | **37× faster** batch matrix similarity |
 | **Retained Buffers per 48MP Photo (8000×6000)** | ~288 MB retained (Dual PIL RGB + OpenCV BGR) | **~4.72 MB** retained (Dual 1024px buffers) | **>98% retained buffer reduction** |
 | **Retained Batch Memory (32 Photos in RAM)** | ~9.2 GB uncompressed | **~151 MB** downscaled | Prevents cumulative batch accumulation |
 | **Transient Decode Peak (Single 48MP JPEG)** | ~569 MiB peak RSS | ~569 MiB peak RSS | Full-resolution initial decode & EXIF transpose |
-| **Test Suite Execution (87 tests)** | N/A | **~2.4s** | Fast isolated mock & unit tests |
+| **Test Suite Execution (95 tests)** | N/A | **~2.4s** | Fast isolated mock & unit tests |
 
 > [!NOTE]
 > While initial image decompression and EXIF orientation transpose temporarily allocate full uncompressed raster memory (~569 MiB peak transient RSS for an 8000×6000 JPEG), dimension-capped thumbnailing immediately shrinks the retained in-memory buffers (both PIL RGB and OpenCV BGR) to ~4.72 MB combined per photo (~151 MB total for a batch of 32), preventing cumulative memory exhaustion during large album processing.
@@ -160,14 +163,14 @@ pip install -e ".[all,dev]"
 Select the top 50 photos from a collection and copy them to `./selected` with zero-padded index prefixes:
 
 ```bash
-photo-curator --input ./my_photos --output ./selected --target 50
+ai-photo-curator --input ./my_photos --output ./selected --target 50
 ```
 
 ### 2. Dry Run with Burst Deduplication & CSV Preview
 Score all photos, eliminate redundant burst shots with similarity $\ge 0.90$, and export full rankings to a CSV file without copying:
 
 ```bash
-photo-curator \
+ai-photo-curator \
   --input ./sample_photos \
   --output ./album \
   --target 5 \
@@ -201,7 +204,7 @@ Sample output rankings on included sample photos:
 Customize curation for landscape and architectural photography (e.g. 50% sharpness, 50% aesthetics, zero emotion):
 
 ```bash
-photo-curator \
+ai-photo-curator \
   --input ./nature_trip \
   --output ./album \
   --no_deepface \
@@ -216,13 +219,13 @@ photo-curator \
 
 ```bash
 # Apple Silicon (M1 / M2 / M3 / M4)
-photo-curator --input ./photos --output ./album --device mps --batch_size 32
+ai-photo-curator --input ./photos --output ./album --device mps --batch_size 32
 
 # NVIDIA CUDA
-photo-curator --input ./photos --output ./album --device cuda --batch_size 64
+ai-photo-curator --input ./photos --output ./album --device cuda --batch_size 64
 
 # Multi-Core CPU
-photo-curator --input ./photos --output ./album --device cpu --batch_size 16
+ai-photo-curator --input ./photos --output ./album --device cpu --batch_size 16
 ```
 
 ### Custom Aesthetic Prompts
@@ -231,10 +234,10 @@ Tailor aesthetic scoring for specific album themes:
 
 ```bash
 # Family portraits
-photo-curator --input ./family --output ./album --ref_text "a warm happy family portrait with natural lighting"
+ai-photo-curator --input ./family --output ./album --ref_text "a warm happy family portrait with natural lighting"
 
 # Architectural photography
-photo-curator --input ./travel --output ./album --ref_text "stunning architecture sharp symmetrical award-winning photograph"
+ai-photo-curator --input ./travel --output ./album --ref_text "stunning architecture sharp symmetrical award-winning photograph"
 ```
 
 ---

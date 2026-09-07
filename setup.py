@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="ai-photo-curator",
-    version="1.1.0",
+    version="1.0.0",
     description="AI-powered photo selector that curates, ranks, and deduplicates photo collections.",
     author="Bhargav Kukadiya",
     url="https://github.com/bhargavkukadiya/ai-photo-curator",

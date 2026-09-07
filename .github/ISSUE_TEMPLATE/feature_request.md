@@ -1,6 +1,6 @@
 ---
 name: 🚀 Feature Request
-about: Suggest an idea or architectural improvement for Photo Curator
+about: Suggest an idea or architectural improvement for AI Photo Curator
 title: "[FEATURE] "
 labels: ["enhancement"]
 assignees: ""

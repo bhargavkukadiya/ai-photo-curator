@@ -15,12 +15,12 @@ Why is this change required? What issue or discussion does it address?
 
 ## Key Verification & Testing
 Describe the tests you ran to verify your changes:
-- [ ] Added or updated unit tests in `test_album_selector.py`
-- [ ] All 87+ tests pass locally: `pytest -v`
-- [ ] Syntax compilation check passes: `python3 -m py_compile album_selector.py test_album_selector.py`
+- [ ] Added or updated unit tests in `tests/`
+- [ ] All 95+ tests pass locally: `pytest -v` (or `uv run pytest -v`)
+- [ ] Syntax compilation check passes: `python3 -m py_compile album_selector.py $(find src tests -name "*.py")`
 - [ ] Tested CLI execution on `sample_photos/`:
   ```bash
-  python3 album_selector.py --input ./sample_photos --output ./out --dryrun
+  ai-photo-curator --input ./sample_photos --output ./out --dryrun
   ```
 
 ## Security & Safety Checklist
