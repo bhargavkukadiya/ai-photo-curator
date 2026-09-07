@@ -553,3 +553,98 @@ class TestCopyTopImages:
 
         backup_dirs = [p for p in out_dir.iterdir() if p.name.startswith(".curator_backup_")]
         assert len(backup_dirs) == 1
+
+
+@pytest.mark.parametrize("abort_type", [KeyboardInterrupt, SystemExit])
+def test_commit_cancellation_restores_album_and_releases_lock(tmp_path, abort_type):
+    old = tmp_path / "old.jpg"
+    new = tmp_path / "new.jpg"
+    save_test_image(old)
+    save_test_image(new)
+    out = tmp_path / "out"
+    copy_top_images([ScoredImage(old, .9, .5, .5, 0)], out)
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+    real_link = os.link
+    calls = 0
+
+    def interrupt_second_link(src, dst):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise abort_type()
+        return real_link(src, dst)
+
+    with mock.patch("photo_curator.storage.os.link", side_effect=interrupt_second_link):
+        with pytest.raises(abort_type):
+            copy_top_images([ScoredImage(new, .9, .5, .5, 0)] * 2, out, overwrite=True)
+
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+    assert not (tmp_path / ".out.curator.lock").exists()
+    assert copy_top_images([ScoredImage(new, .9, .5, .5, 0)], out, overwrite=True) == 1
+
+
+def test_interrupted_rollback_preserves_recovery_files(tmp_path):
+    old = tmp_path / "old.jpg"
+    new = tmp_path / "new.jpg"
+    save_test_image(old)
+    save_test_image(new)
+    out = tmp_path / "out"
+    copy_top_images([ScoredImage(old, .9, .5, .5, 0)], out)
+    previous_manifest = (out / ".curator_manifest.json").read_bytes()
+    real_replace = os.replace
+
+    def interrupt_restore(src, dst):
+        if ".curator_backup_" in str(src):
+            raise KeyboardInterrupt()
+        return real_replace(src, dst)
+
+    with mock.patch("photo_curator.storage.os.link", side_effect=KeyboardInterrupt), mock.patch(
+        "photo_curator.storage.os.replace", side_effect=interrupt_restore
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            copy_top_images([ScoredImage(new, .9, .5, .5, 0)], out, overwrite=True)
+
+    backup, = out.glob(".curator_backup_*")
+    assert (backup / "1_old.jpg").read_bytes() == old.read_bytes()
+    assert (backup / ".curator_manifest.json").read_bytes() == previous_manifest
+
+
+def test_competing_process_is_rejected_before_manifest_access(tmp_path):
+    import subprocess
+    import sys
+
+    old = tmp_path / "old.jpg"
+    new = tmp_path / "new.jpg"
+    save_test_image(old)
+    save_test_image(new)
+    out = tmp_path / "out"
+    copy_top_images([ScoredImage(old, .9, .5, .5, 0)], out)
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+    real_copy = shutil.copy2
+
+    def launch_competitor(src, dst):
+        result = real_copy(src, dst)
+        competitor = subprocess.run(
+            [sys.executable, "-c", """
+import sys
+from pathlib import Path
+from photo_curator.storage import copy_top_images
+try:
+    copy_top_images([], Path(sys.argv[1]), overwrite=True)
+except RuntimeError as error:
+    assert 'locked by another writer' in str(error), str(error)
+    sys.exit(23)
+""", str(out / ".." / "out")],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+            capture_output=True, text=True, timeout=30,
+        )
+        assert competitor.returncode == 23, competitor.stdout + competitor.stderr
+        assert {p.name: p.read_bytes() for p in out.iterdir() if p.is_file()} == before
+        return result
+
+    with mock.patch("photo_curator.storage.shutil.copy2", side_effect=launch_competitor):
+        copy_top_images([ScoredImage(new, .9, .5, .5, 0)], out, overwrite=True)
+
+    assert sorted(p.name for p in out.iterdir()) == [".curator_manifest.json", "1_new.jpg"]
+    assert json.loads((out / ".curator_manifest.json").read_text())["files"] == ["1_new.jpg"]
+    assert not (tmp_path / ".out.curator.lock").exists()

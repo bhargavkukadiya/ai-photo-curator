@@ -26,15 +26,15 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 
 ## Getting Started
 
-1. **Fork the repository** on GitHub: [https://github.com/bhargavkukadiya/photo-curator](https://github.com/bhargavkukadiya/photo-curator)
+1. **Fork the repository** on GitHub: [https://github.com/bhargavkukadiya/ai-photo-curator](https://github.com/bhargavkukadiya/ai-photo-curator)
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/<your-username>/photo-curator.git
-   cd photo-curator
+   git clone https://github.com/<your-username>/ai-photo-curator.git
+   cd ai-photo-curator
    ```
 3. **Set the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/bhargavkukadiya/photo-curator.git
+   git remote add upstream https://github.com/bhargavkukadiya/ai-photo-curator.git
    ```
 
 ---
@@ -120,7 +120,7 @@ Ensure all tests pass cleanly with **zero failures** and **zero new warnings** b
    ```bash
    git push origin feature/my-awesome-improvement
    ```
-6. **Open a Pull Request** against the `main` branch of `bhargavkukadiya/photo-curator`.
+6. **Open a Pull Request** against the `main` branch of `bhargavkukadiya/ai-photo-curator`.
 7. Fill in the [Pull Request Template](.github/PULL_REQUEST_TEMPLATE.md) completely, describing the rationale, changes made, and verification steps.
 
 ---

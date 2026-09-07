@@ -54,6 +54,36 @@ def copy_top_images(
     *,
     overwrite: bool = False,
 ) -> int:
+    """Copy an album under an exclusive, cross-process directory lock.
+
+    A competing writer fails before reading the manifest. The lock lives beside
+    the album so it does not interfere with the nonempty-output guard. After an
+    uncatchable process termination, remove the abandoned lock directory only
+    after confirming that no writer is running and inspecting recovery files.
+    """
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = output_path.parent / f".{output_path.name}.curator.lock"
+    try:
+        lock_path.mkdir()
+    except FileExistsError as e:
+        raise RuntimeError(
+            f"Output directory '{output_path}' is locked by another writer. "
+            f"If the writer was terminated, inspect recovery files and remove "
+            f"the abandoned lock directory '{lock_path}' before retrying."
+        ) from e
+    try:
+        return _copy_top_images_locked(images, output_path, overwrite=overwrite)
+    finally:
+        lock_path.rmdir()
+
+
+def _copy_top_images_locked(
+    images: list[ScoredImage],
+    output_path: Path,
+    *,
+    overwrite: bool = False,
+) -> int:
     """Copy the selected images to *output_path* with zero-padded index prefixes.
 
     Uses transactional staging and two-phase commit with full rollback capability:
@@ -234,6 +264,8 @@ def copy_top_images(
         manifest_backed_up = False
         legacy_manifest_backed_up = False
 
+        # Keep recovery files unless commit or rollback explicitly completes.
+        preserve_backup = True
         try:
             # 3A: Backup existing manifest files
             if manifest_file.exists():
@@ -317,8 +349,9 @@ def copy_top_images(
                     f"Manifest '{manifest_file}' was replaced with a symlink during run."
                 )
             os.replace(staged_manifest, manifest_file)
+            preserve_backup = False
 
-        except Exception as e:
+        except BaseException as e:
             # Rollback on ANY commit failure
             logger.error("Commit failed, rolling back changes: %s", e)
             rollback_errors: list[str] = []
@@ -373,6 +406,9 @@ def copy_top_images(
                     f"Recovery files preserved in '{backup_dir}': {'; '.join(rollback_errors)}"
                 ) from e
 
+            preserve_backup = False
+            if not isinstance(e, Exception):
+                raise
             raise RuntimeError(
                 f"Commit phase failed and was rolled back: {e}"
             ) from e

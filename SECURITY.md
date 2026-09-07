@@ -42,7 +42,7 @@ We take the security of Photo Curator and its users seriously. If you believe yo
 
 1. **Do NOT file a public issue.**
 2. Report the vulnerability privately via **GitHub Security Advisories**:
-   - Navigate to [https://github.com/bhargavkukadiya/photo-curator/security/advisories](https://github.com/bhargavkukadiya/photo-curator/security/advisories)
+   - Navigate to [https://github.com/bhargavkukadiya/ai-photo-curator/security/advisories](https://github.com/bhargavkukadiya/ai-photo-curator/security/advisories)
    - Click **"Report a vulnerability"** to submit your findings confidentially.
    - Alternatively, contact the maintainer directly via email at `bhargavkukadiya@users.noreply.github.com` with the subject `[SECURITY] Photo Curator Vulnerability Report`.
 3. Provide detailed steps to reproduce the vulnerability, including:

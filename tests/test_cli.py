@@ -179,3 +179,26 @@ class TestCLIValidation:
         manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
         assert len(manifest_data["files"]) == 1
         assert (out_dir / manifest_data["files"][0]).exists()
+
+
+@pytest.mark.parametrize("dryrun", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_preview_inside_fresh_output(tmp_path, dryrun, nested):
+    input_dir = tmp_path / "input"
+    save_test_image(input_dir / "photo.jpg")
+    output_dir = tmp_path / "album"
+    preview = output_dir / "reports" / "scores.csv" if nested else output_dir / "scores.csv"
+    argv = [
+        "photo-curator", "--input", str(input_dir), "--output", str(output_dir),
+        "--preview_csv", str(preview), "--no_deepface",
+    ]
+    if dryrun:
+        argv.append("--dryrun")
+    with mock.patch("sys.argv", argv), mock.patch("photo_curator.cli.load_clip_model"), mock.patch(
+        "photo_curator.cli.encode_reference_text"
+    ), mock.patch("photo_curator.cli.aesthetic_score_batch", return_value=([.5], [torch.tensor([1.])])):
+        main()
+
+    assert "Selected" in preview.read_text()
+    assert (output_dir / "1_photo.jpg").exists() is not dryrun
+    assert (output_dir / ".curator_manifest.json").exists() is not dryrun

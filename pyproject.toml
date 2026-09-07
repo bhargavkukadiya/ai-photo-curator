@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "photo-curator"
+name = "ai-photo-curator"
 version = "1.1.0"
 description = "AI-powered photo selector that curates, ranks, and deduplicates large photo collections for albums."
 readme = "README.md"
@@ -13,6 +13,7 @@ authors = [
     { name = "Bhargav Kukadiya" }
 ]
 keywords = [
+    "ai-photo-curator",
     "photo-curator",
     "photo-selection",
     "computer-vision",
@@ -63,13 +64,14 @@ dev = [
 ]
 
 [project.scripts]
+ai-photo-curator = "photo_curator.cli:main"
 photo-curator = "photo_curator.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/bhargavkukadiya/photo-curator"
-Repository = "https://github.com/bhargavkukadiya/photo-curator.git"
-Issues = "https://github.com/bhargavkukadiya/photo-curator/issues"
-Changelog = "https://github.com/bhargavkukadiya/photo-curator/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/bhargavkukadiya/ai-photo-curator"
+Repository = "https://github.com/bhargavkukadiya/ai-photo-curator.git"
+Issues = "https://github.com/bhargavkukadiya/ai-photo-curator/issues"
+Changelog = "https://github.com/bhargavkukadiya/ai-photo-curator/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 minversion = "7.0"

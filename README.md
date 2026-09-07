@@ -1,9 +1,9 @@
-# 📸 Photo Curator
+# 📸 AI Photo Curator
 
-[![CI](https://github.com/bhargavkukadiya/photo-curator/actions/workflows/ci.yml/badge.svg)](https://github.com/bhargavkukadiya/photo-curator/actions/workflows/ci.yml)
+[![CI](https://github.com/bhargavkukadiya/ai-photo-curator/actions/workflows/ci.yml/badge.svg)](https://github.com/bhargavkukadiya/ai-photo-curator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-87%20passed-brightgreen.svg)](test_album_selector.py)
+[![Tests](https://img.shields.io/badge/tests-95%20passed-brightgreen.svg)](tests/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![Hardware](https://img.shields.io/badge/hardware-Apple%20Silicon%20(MPS)%20%7C%20CUDA%20%7C%20CPU-orange.svg)]()
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)]()
@@ -123,8 +123,8 @@ Photo Curator includes vectorized PyTorch batch operations and ingestion memory 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/bhargavkukadiya/photo-curator.git
-cd photo-curator
+git clone https://github.com/bhargavkukadiya/ai-photo-curator.git
+cd ai-photo-curator
 
 # 2. Create and activate a virtual environment
 python3 -m venv .venv
@@ -134,7 +134,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-After installation, the `photo-curator` CLI command is globally available in your environment.
+After installation, the `ai-photo-curator` CLI command (as well as the backwards-compatible `photo-curator` alias) is globally available in your environment.
 
 ### Option 2: Install with Optional Extras
 
@@ -293,10 +293,13 @@ When `--preview_csv <filename>.csv` is passed, Photo Curator writes a structured
 Photo Curator enforces strict filesystem integrity guarantees:
 
 1. **Two-Phase Atomic Commit**: Files are copied into an isolated temporary folder (`.curator_stage_<hash>`). Only upon successful scoring and staging are files moved to the destination folder via atomic links or `O_CREAT | O_EXCL` exclusive stream copy.
-2. **Automatic Rollback**: If an exception or filesystem error occurs mid-transaction (disk full, permission denied, I/O failure), changes are rolled back to the prior state and backup files are restored. *(Note: Uncaught process termination signals like SIGINT/SIGKILL bypass Python exception handlers).*
+2. **Automatic Rollback**: If an exception or filesystem error occurs mid-transaction (disk full, permission denied, I/O failure), changes are rolled back to the prior state and backup files are restored. Ctrl-C during commit also triggers rollback; if rollback is interrupted, recovery backups are retained. SIGKILL and power loss cannot run rollback.
 3. **Path Traversal Protection**: Manifest entries are strictly checked against directory escape (`..`, `/`).
 4. **Symlink Rejection**: Manifests and tracked entries reject symlinks to prevent symlink clobbering attacks.
 5. **Untracked File Safety**: Photo Curator will never delete or overwrite untracked user files present in the output folder.
+6. **Exclusive Album Writes**: An atomic lock directory beside the album (`.<album-name>.curator.lock`) rejects overlapping writers before manifest inspection. It is removed after success, failure, or Ctrl-C. After SIGKILL or a crash, confirm no writer is running and inspect any `.curator_backup_*` recovery directories before manually removing an abandoned lock.
+
+CSV reports are written after successful photo copying, so `--preview_csv ./album/scores.csv` works for a fresh album without `--overwrite`. With `--dryrun`, the CSV is written without copying photos.
 
 ---
 
@@ -305,17 +308,14 @@ Photo Curator enforces strict filesystem integrity guarantees:
 Run the test suite:
 
 ```bash
-# Run all 87 unit tests
+# Run all 95 unit tests
 pytest -v
 
 # Run with verbose traceback
-pytest test_album_selector.py -vv
-
-# Syntax compilation check
-python3 -m py_compile album_selector.py test_album_selector.py
+pytest -vv
 ```
 
-All 87 tests execute in-memory with mocked ML models—no GPU or model downloads required.
+All 95 tests execute in-memory with mocked ML models—no GPU or model downloads required.
 
 ---
 

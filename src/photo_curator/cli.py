@@ -73,7 +73,7 @@ def main() -> None:
     parser.add_argument(
         "--preview_csv",
         default=None,
-        help="Optional: save all scores to a CSV before copying",
+        help="Optional: save all scores to a CSV (after copying, unless --dryrun)",
     )
     parser.add_argument(
         "--dryrun",
@@ -354,21 +354,6 @@ def main() -> None:
         return_suppressed=True,
     )
 
-    # --- Optional CSV export (includes full ranking and selection status) ---
-    if args.preview_csv:
-        selected_set = {s.path for s in selected_images}
-        statuses = {}
-        for s in scored_images:
-            if s.path in selected_set:
-                statuses[s.path] = "Selected"
-            elif s.path in suppressed_paths:
-                statuses[s.path] = "Duplicate_Suppressed"
-            else:
-                statuses[s.path] = "Rank_Cutoff"
-        export_scores_csv(
-            scored_images, Path(args.preview_csv), statuses=statuses
-        )
-
     # --- Copy top images ----------------------------------------------------
     if not args.dryrun:
         try:
@@ -382,6 +367,21 @@ def main() -> None:
         logger.info(
             "Dry run complete. Selected %d images. No files were copied.",
             len(selected_images),
+        )
+
+    # --- Optional CSV export (includes full ranking and selection status) ---
+    if args.preview_csv:
+        selected_set = {s.path for s in selected_images}
+        statuses = {}
+        for s in scored_images:
+            if s.path in selected_set:
+                statuses[s.path] = "Selected"
+            elif s.path in suppressed_paths:
+                statuses[s.path] = "Duplicate_Suppressed"
+            else:
+                statuses[s.path] = "Rank_Cutoff"
+        export_scores_csv(
+            scored_images, Path(args.preview_csv), statuses=statuses
         )
 
 
