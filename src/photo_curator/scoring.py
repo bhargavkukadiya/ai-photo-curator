@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -21,14 +22,11 @@ from photo_curator.models import (
     SHARPNESS_MAX,
     SHARPNESS_MIN,
     SUPPORTED_EXTENSIONS,
+    SUPPORTED_FORMATS,
+    get_deepface,
 )
 
 DeepFace = None
-if DEEPFACE_AVAILABLE:
-    try:
-        from deepface import DeepFace
-    except ImportError:
-        pass
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +41,15 @@ def technical_score(image: np.ndarray) -> float:
 
     Sharpness is the variance of the Laplacian, standardized by resizing
     the image to a canonical resolution (max edge MAX_ANALYSIS_DIMENSION)
-    to prevent sensor resolution bias, clamped to [SHARPNESS_MIN, SHARPNESS_MAX]
+    to reduce sensitivity to image resolution, clamped to [SHARPNESS_MIN, SHARPNESS_MAX]
     and scaled to [0, 1].
 
     Exposure is normalized to [0, 1] using distance from midpoint (0.5),
     where 0.5 is 1.0 (ideal exposure) and 0.0 or 1.0 is 0.0 (pure black or blown-out white).
     The two sub-scores are averaged.
     """
+    if image.size == 0:
+        raise ValueError("Image array must not be empty.")
     h, w = image.shape[:2]
     if max(h, w) > MAX_ANALYSIS_DIMENSION:
         scale = MAX_ANALYSIS_DIMENSION / max(h, w)
@@ -162,15 +162,14 @@ def emotion_score(
     if is_available is None:
         is_available = DEEPFACE_AVAILABLE
 
-    deepface_cls = getattr(album_mod, "DeepFace", None) or globals().get("DeepFace")
-
-    if not deepface_enabled or not is_available or deepface_cls is None:
+    if not deepface_enabled or not is_available:
+        return 0.0
+    deepface_cls = getattr(album_mod, "DeepFace", None) or DeepFace or get_deepface()
+    if deepface_cls is None:
         return 0.0
 
     try:
-        target = (
-            str(image_input) if isinstance(image_input, Path) else image_input
-        )
+        target = str(image_input) if isinstance(image_input, Path) else image_input
         result = deepface_cls.analyze(
             img_path=target,
             actions=["emotion"],
@@ -183,9 +182,7 @@ def emotion_score(
         face_scores: list[float] = []
         for face in result:
             if isinstance(face, dict) and "emotion" in face:
-                confidence = face.get(
-                    "face_confidence", face.get("confidence", 1.0)
-                )
+                confidence = face.get("face_confidence", face.get("confidence", 1.0))
                 if confidence is None or confidence <= 0:
                     continue
                 happy = face["emotion"].get("happy", 0.0)
@@ -197,11 +194,7 @@ def emotion_score(
         return float(np.mean(face_scores))
 
     except Exception as e:
-        name = (
-            image_input.name
-            if isinstance(image_input, Path)
-            else "in-memory image"
-        )
+        name = image_input.name if isinstance(image_input, Path) else "in-memory image"
         logger.warning("DeepFace analysis failed for %s: %s", name, e)
         return 0.0
 
@@ -218,25 +211,26 @@ def calculate_total_score(
 ) -> float:
     """Calculate normalized total score across active signals.
 
-    When emotion scoring is disabled or unavailable, weights dynamically
-    rebalance across technical and aesthetic signals so total scores span [0, 1].
+    With emotion_active=False, only technical and aesthetic weights participate.
+    Finite, non-negative weights are normalized without overflowing their sum.
+    For component scores in [0, 1], the result is also in [0, 1].
+    All-zero active weights return 0.0; non-finite active scores or invalid active
+    weights raise ValueError.
     """
-    if not emotion_active:
-        total_w = weight_technical + weight_aesthetic
-        if total_w <= 0:
-            return 0.0
-        return (
-            weight_technical * technical + weight_aesthetic * aesthetic
-        ) / total_w
-
-    total_w = weight_technical + weight_aesthetic + weight_emotion
-    if total_w <= 0:
+    weights = [weight_technical, weight_aesthetic]
+    scores = [technical, aesthetic]
+    if emotion_active:
+        weights.append(weight_emotion)
+        scores.append(emotion)
+    if any(not math.isfinite(w) or w < 0 for w in weights):
+        raise ValueError("Scoring weights must be finite and non-negative.")
+    if any(not math.isfinite(s) for s in scores):
+        raise ValueError("Component scores must be finite.")
+    scale = max(weights)
+    if scale == 0:
         return 0.0
-    return (
-        weight_technical * technical
-        + weight_aesthetic * aesthetic
-        + weight_emotion * emotion
-    ) / total_w
+    normalized = [w / scale for w in weights]
+    return math.fsum(w * s for w, s in zip(normalized, scores)) / math.fsum(normalized)
 
 
 def load_clip_model(device: str = "cpu") -> SentenceTransformer:
@@ -259,13 +253,41 @@ def load_image(
     """Read an image once and return both PIL (RGB) and OpenCV (BGR) arrays.
 
     Applies EXIF orientation transpose so phone/camera photos are correctly rotated.
-    If the image exceeds *max_dimension* along its longest edge, it is resized
-    using high-quality downsampling to protect working memory from multi-gigabyte spikes.
+    After full decoding and orientation, images exceeding *max_dimension* are
+    downsampled to limit retained pixel buffers; transient decoding and integer
+    conversion still allocate memory proportional to the source dimensions.
+    Unsigned 16-bit grayscale is normalized. Signed/32-bit integer TIFFs and
+    floating-point grayscale are rejected instead of being silently rescaled.
     Returns ``(pil_img, cv_img)`` or ``(None, None)`` on failure.
     """
     try:
-        with Image.open(path) as raw_img:
-            pil_img = ImageOps.exif_transpose(raw_img).convert("RGB")
+        with Image.open(path, formats=SUPPORTED_FORMATS) as raw_img:
+            oriented = ImageOps.exif_transpose(raw_img)
+            if oriented.mode.startswith("I;16") or oriented.mode == "I":
+                # Mode I also represents signed and 32-bit TIFFs. Validate
+                # their encoded sample type before applying unsigned 16-bit scaling.
+                if raw_img.format == "TIFF" and (
+                    raw_img.tag_v2.get(258) != (16,)  # BitsPerSample
+                    or raw_img.tag_v2.get(339, (1,)) != (1,)  # SampleFormat: unsigned
+                ):
+                    raise ValueError(
+                        "Only unsigned 16-bit integer grayscale images are supported."
+                    )
+                samples = np.asarray(oriented)
+                if np.any(samples < 0) or np.any(samples > 65535):
+                    raise ValueError(
+                        "Only unsigned 16-bit integer grayscale images are supported."
+                    )
+                pixels = np.rint(samples.astype(np.float64) * (255.0 / 65535.0)).astype(
+                    np.uint8
+                )
+                pil_img = Image.fromarray(pixels).convert("RGB")
+            elif oriented.mode == "F":
+                raise ValueError(
+                    "Floating-point HDR images require explicit tone mapping."
+                )
+            else:
+                pil_img = oriented.convert("RGB")
             if max_dimension is not None and max(pil_img.size) > max_dimension:
                 pil_img.thumbnail(
                     (max_dimension, max_dimension),
@@ -273,6 +295,6 @@ def load_image(
                 )
         cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         return pil_img, cv_img
-    except (OSError, SyntaxError, ValueError) as e:
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError) as e:
         logger.warning("Could not read image %s: %s", path.name, e)
         return None, None

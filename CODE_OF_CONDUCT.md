@@ -58,8 +58,11 @@ representative at an online or offline event.
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders at **bhargavkukadiya@users.noreply.github.com**.
+Instances of abusive, harassing, or otherwise unacceptable behavior should be
+reported privately to the maintainer. To arrange a private reporting channel,
+open an [issue requesting a confidential contact method](https://github.com/bhargavkukadiya/ai-photo-curator/issues).
+Include only the contact request, without complaint details, names, or personal
+information. Submit the report through the private channel the maintainer provides.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

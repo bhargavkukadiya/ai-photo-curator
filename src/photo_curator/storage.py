@@ -7,8 +7,11 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from tqdm import tqdm
 
@@ -20,31 +23,183 @@ from photo_curator.models import (
 
 logger = logging.getLogger(__name__)
 
+FileIdentity = tuple[int, int]
+_UNVALIDATED = object()
+
+
+def file_identity(path: Path) -> FileIdentity | None:
+    """Snapshot device/inode identity without following symlinks, not contents."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"File '{path}' is a symlink. Refusing to proceed.")
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"Path '{path}' exists and is not a regular file.")
+    return info.st_dev, info.st_ino
+
+
+@dataclass
+class _Publication:
+    path: Path
+    identity: FileIdentity | None
+
+
+def _publish_new_file(
+    source: Path, destination: Path, journal: list[_Publication]
+) -> None:
+    """Publish to a vacant slot, recording intent before any mutation.
+
+    Hard-link ownership can be reconciled even if interruption occurs after the
+    syscall. If exclusive creation is interrupted before its inode is recorded,
+    rollback retains recovery files rather than guessing which file to delete.
+    """
+    intent = _Publication(destination, file_identity(source))
+    journal.append(intent)
+    try:
+        os.link(source, destination)
+        return
+    except FileExistsError as e:
+        journal.remove(intent)
+        raise RuntimeError(
+            f"Destination file '{destination}' already exists. "
+            "Refusing to overwrite untracked file."
+        ) from e
+    except OSError:
+        pass  # Filesystems without hard links use exclusive streaming creation.
+
+    intent.identity = None
+    try:
+        fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as e:
+        journal.remove(intent)
+        raise RuntimeError(
+            f"Destination file '{destination}' already exists. "
+            "Refusing to overwrite untracked file."
+        ) from e
+    except OSError:
+        journal.remove(intent)
+        raise
+    with open(fd, "wb", closefd=True) as out_f:
+        info = os.fstat(out_f.fileno())
+        intent.identity = info.st_dev, info.st_ino
+        with open(source, "rb") as in_f:
+            shutil.copyfileobj(in_f, out_f)
+    shutil.copystat(source, destination, follow_symlinks=False)
+
+
+def _remove_publication(intent: _Publication) -> None:
+    current = file_identity(intent.path)
+    if current is None:
+        return
+    if intent.identity is None or current != intent.identity:
+        raise RuntimeError(
+            f"Ownership of '{intent.path}' is uncertain; retaining recovery files."
+        )
+    intent.path.unlink()
+
+
+def _restore_backup(backup: Path, destination: Path) -> None:
+    """Restore without clobbering a file created by another program."""
+    journal: list[_Publication] = []
+    try:
+        _publish_new_file(backup, destination, journal)
+    except BaseException:
+        for intent in journal:
+            _remove_publication(intent)
+        raise
+    backup.unlink()
+
+
+def _check_csv_sources(csv_path: Path, protected_paths: Sequence[Path]) -> None:
+    for source in protected_paths:
+        if source.resolve() == csv_path or (
+            csv_path.exists() and source.exists() and csv_path.samefile(source)
+        ):
+            raise RuntimeError(
+                f"Preview CSV '{csv_path}' conflicts with an input photo ({source.name})."
+            )
+
 
 def export_scores_csv(
     scored_images: list[ScoredImage],
     csv_path: Path,
     statuses: dict[Path, str] | None = None,
+    *,
+    overwrite: bool = False,
+    protected_paths: Sequence[Path] = (),
+    expected_identity: FileIdentity | None | object = _UNVALIDATED,
 ) -> None:
-    """Write scored images to a CSV file with formatted values and optional status."""
+    """Stage a report and publish it without truncating existing inodes.
+
+    Existing destinations require overwrite=True. Source-photo aliases and
+    symlinks are rejected; protected_paths extends protection to unscored inputs.
+    expected_identity can preserve the destination inode identity checked before
+    scoring. When supplying expected_identity (including None for an absent
+    file), callers must canonicalize the parent before taking that snapshot:
+    csv_path = csv_path.parent.resolve() / csv_path.name. The parent is not
+    resolved again here, so redirection through a symlink after validation is
+    rejected. Status is included only when statuses is supplied, with Unselected
+    as the default for unmapped paths.
+    """
+    csv_path = csv_path.absolute()
+    if expected_identity is _UNVALIDATED:
+        csv_path = csv_path.parent.resolve() / csv_path.name
+    if csv_path.parent.resolve() != csv_path.parent:
+        raise RuntimeError(
+            f"Preview CSV parent '{csv_path.parent}' resolves through a symlink."
+        )
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        header = ["Path", "TotalScore", "Technical", "Aesthetic", "Emotion"]
-        if statuses is not None:
-            header.append("Status")
-        writer.writerow(header)
-        for s in scored_images:
-            row = [
-                s.path,
-                f"{s.total:.4f}",
-                f"{s.technical:.4f}",
-                f"{s.aesthetic:.4f}",
-                f"{s.emotion:.4f}",
-            ]
+    protected = [s.path for s in scored_images] + list(protected_paths)
+    _check_csv_sources(csv_path, protected)
+    current = file_identity(csv_path)
+    if expected_identity is _UNVALIDATED:
+        expected_identity = current
+    if current != expected_identity or (current is not None and not overwrite):
+        raise RuntimeError(
+            f"Preview CSV '{csv_path}' already exists or changed during scoring."
+        )
+    fd, name = tempfile.mkstemp(dir=csv_path.parent, prefix=".curator_csv_")
+    staged = Path(name)
+    journal: list[_Publication] = []
+    try:
+        with open(fd, "w", newline="", encoding="utf-8", closefd=True) as f:
+            writer = csv.writer(f)
+            header = ["Path", "TotalScore", "Technical", "Aesthetic", "Emotion"]
             if statuses is not None:
-                row.append(statuses.get(s.path, "Unselected"))
-            writer.writerow(row)
+                header.append("Status")
+            writer.writerow(header)
+            for s in scored_images:
+                row = [
+                    ("'" + str(s.path))
+                    if str(s.path).startswith(("=", "+", "-", "@", "\t", "\r"))
+                    else str(s.path),
+                    f"{s.total:.4f}",
+                    f"{s.technical:.4f}",
+                    f"{s.aesthetic:.4f}",
+                    f"{s.emotion:.4f}",
+                ]
+                if statuses is not None:
+                    row.append(statuses.get(s.path, "Unselected"))
+                writer.writerow(row)
+            f.flush()
+            os.fsync(f.fileno())
+        if csv_path.parent.resolve() != csv_path.parent:
+            raise RuntimeError("Preview CSV parent changed during export.")
+        _check_csv_sources(csv_path, protected)
+        if file_identity(csv_path) != expected_identity:
+            raise RuntimeError(f"Preview CSV '{csv_path}' changed during export.")
+        if expected_identity is None:
+            _publish_new_file(staged, csv_path, journal)
+        else:
+            os.replace(staged, csv_path)
+    except BaseException:
+        for intent in journal:
+            _remove_publication(intent)
+        raise
+    finally:
+        staged.unlink(missing_ok=True)
     logger.info("Preview CSV saved to %s", csv_path)
 
 
@@ -86,14 +241,17 @@ def _copy_top_images_locked(
 ) -> int:
     """Copy the selected images to *output_path* with zero-padded index prefixes.
 
-    Uses transactional staging and two-phase commit with full rollback capability:
+    Uses transactional staging and attempts rollback if commit fails:
     - All new images and manifest are staged in an isolated temporary directory.
     - Previous manifest and files to be replaced are safely backed up before committing.
-    - If any commit operation fails, all changes are rolled back to the original state.
+    - Failed commits restore prior files where safe; uncertain ownership or
+      concurrent replacements cause recovery backups to be retained.
     - JSON manifest avoids corruption from newlines or special characters in filenames.
 
     Returns the number of successfully copied images.
-    Raises RuntimeError if any file copy, manifest validation, cleanup, or write fails.
+    Validation and handled transaction failures raise RuntimeError. Other
+    filesystem errors can raise OSError; cancellation propagates after successful
+    rollback. Cleanup is best effort, with uncertain recovery backups retained.
     """
     output_path.mkdir(parents=True, exist_ok=True)
     resolved_output = output_path.resolve()
@@ -109,6 +267,11 @@ def _copy_top_images_locked(
         raise RuntimeError(
             f"Manifest file '{legacy_manifest_file}' is a symlink. Refusing to proceed."
         )
+
+    # Validate both reserved paths, including the unused legacy manifest.
+    previous_identities: dict[Path, FileIdentity | None] = {
+        path: file_identity(path) for path in (manifest_file, legacy_manifest_file)
+    }
 
     # Enforce overwrite guard inside copy_top_images
     if not overwrite:
@@ -151,9 +314,7 @@ def _copy_top_images_locked(
                 f"Manifest path '{legacy_manifest_file}' exists and is not a regular file."
             )
         try:
-            raw_entries = legacy_manifest_file.read_text(
-                encoding="utf-8"
-            ).splitlines()
+            raw_entries = legacy_manifest_file.read_text(encoding="utf-8").splitlines()
         except OSError as e:
             raise RuntimeError(
                 f"Failed to read existing legacy manifest '{legacy_manifest_file}': {e}"
@@ -164,11 +325,16 @@ def _copy_top_images_locked(
             raise RuntimeError(
                 f"Manifest security error: invalid non-string entry in manifest: {item!r}"
             )
-        fname = item.strip()
+        fname = item
         if not fname:
             continue
         # Path traversal protection
-        if Path(fname).name != fname or fname in (".", ".."):
+        if Path(fname).name != fname or fname in (
+            ".",
+            "..",
+            MANIFEST_FILENAME,
+            LEGACY_MANIFEST_FILENAME,
+        ):
             raise RuntimeError(
                 f"Manifest security error: invalid or path-traversal entry '{fname}' in manifest."
             )
@@ -192,6 +358,7 @@ def _copy_top_images_locked(
                 )
 
         validated_previous_entries.add(fname)
+        previous_identities[target] = file_identity(target)
 
     if not images:
         return 0
@@ -219,17 +386,11 @@ def _copy_top_images_locked(
     preserve_backup = False
 
     try:
-        staging_dir = Path(
-            tempfile.mkdtemp(dir=output_path, prefix=".curator_stage_")
-        )
-        backup_dir = Path(
-            tempfile.mkdtemp(dir=output_path, prefix=".curator_backup_")
-        )
+        staging_dir = Path(tempfile.mkdtemp(dir=output_path, prefix=".curator_stage_"))
+        backup_dir = Path(tempfile.mkdtemp(dir=output_path, prefix=".curator_backup_"))
 
         # Step 1: Copy all images into the staging directory
-        for scored, filename in zip(
-            tqdm(images, desc="Copying"), new_manifest_entries
-        ):
+        for scored, filename in zip(tqdm(images, desc="Copying"), new_manifest_entries):
             staged_dest = staging_dir / filename
             try:
                 shutil.copy2(scored.path, staged_dest)
@@ -258,9 +419,9 @@ def _copy_top_images_locked(
                 f"Failed to write staging manifest '{staged_manifest}': {e}"
             ) from e
 
-        # Step 3: Transactional Two-Phase Commit with Full Rollback
+        # Step 3: Publish staged files, attempting rollback on commit failure.
         moved_to_backup: list[tuple[Path, Path]] = []
-        committed_new_files: list[Path] = []
+        committed_new_files: list[_Publication] = []
         manifest_backed_up = False
         legacy_manifest_backed_up = False
 
@@ -268,116 +429,61 @@ def _copy_top_images_locked(
         preserve_backup = True
         try:
             # 3A: Backup existing manifest files
+            for path, identity in previous_identities.items():
+                if file_identity(path) != identity:
+                    raise RuntimeError(f"Tracked file '{path}' changed during staging.")
             if manifest_file.exists():
-                os.replace(manifest_file, backup_dir / MANIFEST_FILENAME)
                 manifest_backed_up = True
+                os.replace(manifest_file, backup_dir / MANIFEST_FILENAME)
             if legacy_manifest_file.exists():
-                os.replace(
-                    legacy_manifest_file, backup_dir / LEGACY_MANIFEST_FILENAME
-                )
                 legacy_manifest_backed_up = True
+                os.replace(legacy_manifest_file, backup_dir / LEGACY_MANIFEST_FILENAME)
 
             # Backup previous tracked files (both obsolete ones and ones being replaced)
             for fname in sorted(validated_previous_entries):
                 dest_file = output_path / fname
                 if dest_file.exists() or dest_file.is_symlink():
                     bkp_file = backup_dir / fname
-                    os.replace(dest_file, bkp_file)
                     moved_to_backup.append((dest_file, bkp_file))
+                    if file_identity(dest_file) != previous_identities[dest_file]:
+                        raise RuntimeError(
+                            f"Tracked file '{dest_file}' changed during commit."
+                        )
+                    os.replace(dest_file, bkp_file)
 
-            # 3B: Move all staged files into output_path using atomic no-clobber
+            # 3B: Publish each staged file without clobbering existing entries.
             for filename in new_manifest_entries:
                 staged_src = staging_dir / filename
                 final_dest = output_path / filename
-                linked_ok = False
-                try:
-                    os.link(staged_src, final_dest)
-                    committed_new_files.append(final_dest)
-                    linked_ok = True
-                except FileExistsError as e:
-                    raise RuntimeError(
-                        f"Destination file '{final_dest}' already exists (untracked file created during run). "
-                        "Refusing to overwrite untracked file."
-                    ) from e
-                except OSError:
-                    # Hard links not supported on this filesystem (e.g. FAT32, exFAT, network shares).
-                    # Perform race-safe atomic exclusive file creation using O_CREAT | O_EXCL.
-                    try:
-                        fd = os.open(
-                            final_dest,
-                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                            0o600,
-                        )
-                    except FileExistsError as e:
-                        raise RuntimeError(
-                            f"Destination file '{final_dest}' already exists (untracked file created during run). "
-                            "Refusing to overwrite untracked file."
-                        ) from e
-                    except OSError as e:
-                        raise RuntimeError(
-                            f"Exclusive file creation failed for '{final_dest}': {e}"
-                        ) from e
+                _publish_new_file(staged_src, final_dest, committed_new_files)
 
-                    # Destination now exists on disk; register immediately for rollback tracking
-                    committed_new_files.append(final_dest)
-
-                    try:
-                        with open(fd, "wb", closefd=True) as out_f, open(
-                            staged_src, "rb"
-                        ) as in_f:
-                            shutil.copyfileobj(in_f, out_f)
-                        # Preserve metadata (mtime, atime, mode, flags) from staged photo
-                        shutil.copystat(
-                            staged_src, final_dest, follow_symlinks=False
-                        )
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Failed to stream copy data/metadata to '{final_dest}': {e}"
-                        ) from e
-
-                if linked_ok:
-                    try:
-                        staged_src.unlink()
-                    except OSError as e:
-                        logger.warning(
-                            "Failed to remove staging link '%s': %s", staged_src, e
-                        )
-
-            # 3C: Atomically move new manifest into output_path
-            if manifest_file.is_symlink():
-                raise RuntimeError(
-                    f"Manifest '{manifest_file}' was replaced with a symlink during run."
-                )
-            os.replace(staged_manifest, manifest_file)
-            preserve_backup = False
+            # The manifest slot must still be vacant after backing up its old entry.
+            _publish_new_file(staged_manifest, manifest_file, committed_new_files)
 
         except BaseException as e:
             # Rollback on ANY commit failure
             logger.error("Commit failed, rolling back changes: %s", e)
             rollback_errors: list[str] = []
 
-            for cf in committed_new_files:
+            for publication in reversed(committed_new_files):
                 try:
-                    if cf.exists() or cf.is_symlink():
-                        cf.unlink()
-                except OSError as err:
-                    rollback_errors.append(
-                        f"Failed to unlink uncommitted file '{cf}': {err}"
-                    )
+                    _remove_publication(publication)
+                except (OSError, RuntimeError) as err:
+                    rollback_errors.append(str(err))
 
             for orig_dest, bkp_file in reversed(moved_to_backup):
                 try:
                     if bkp_file.exists() or bkp_file.is_symlink():
-                        os.replace(bkp_file, orig_dest)
-                except OSError as err:
+                        _restore_backup(bkp_file, orig_dest)
+                except (OSError, RuntimeError) as err:
                     rollback_errors.append(
                         f"Failed to restore '{orig_dest}' from backup: {err}"
                     )
 
             if manifest_backed_up and (backup_dir / MANIFEST_FILENAME).exists():
                 try:
-                    os.replace(backup_dir / MANIFEST_FILENAME, manifest_file)
-                except OSError as err:
+                    _restore_backup(backup_dir / MANIFEST_FILENAME, manifest_file)
+                except (OSError, RuntimeError) as err:
                     rollback_errors.append(
                         f"Failed to restore manifest '{manifest_file}': {err}"
                     )
@@ -386,14 +492,12 @@ def _copy_top_images_locked(
                 and (backup_dir / LEGACY_MANIFEST_FILENAME).exists()
             ):
                 try:
-                    os.replace(
+                    _restore_backup(
                         backup_dir / LEGACY_MANIFEST_FILENAME,
                         legacy_manifest_file,
                     )
-                except OSError as err:
-                    rollback_errors.append(
-                        f"Failed to restore legacy manifest: {err}"
-                    )
+                except (OSError, RuntimeError) as err:
+                    rollback_errors.append(f"Failed to restore legacy manifest: {err}")
 
             if rollback_errors:
                 preserve_backup = True
@@ -409,19 +513,18 @@ def _copy_top_images_locked(
             preserve_backup = False
             if not isinstance(e, Exception):
                 raise
-            raise RuntimeError(
-                f"Commit phase failed and was rolled back: {e}"
-            ) from e
+            raise RuntimeError(f"Commit phase failed and was rolled back: {e}") from e
+
+        else:
+            # Cancellation after the commit body must not begin rollback once
+            # the recovery files have been marked disposable.
+            preserve_backup = False
 
     finally:
         # Cleanup temporary staging and backup directories
         if staging_dir is not None and staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
-        if (
-            backup_dir is not None
-            and backup_dir.exists()
-            and not preserve_backup
-        ):
+        if backup_dir is not None and backup_dir.exists() and not preserve_backup:
             shutil.rmtree(backup_dir, ignore_errors=True)
 
     logger.info("Copied %d images to %s", len(images), output_path)

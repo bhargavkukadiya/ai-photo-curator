@@ -58,6 +58,7 @@ ehthumbs.db
 .curator_backup_*/
 .*.curator.lock/
 .curator_manifest.tmp
+.curator_csv_*
 output/
 out/
 sample_out/

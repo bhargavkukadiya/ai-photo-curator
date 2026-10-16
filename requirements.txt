@@ -1,13 +1,17 @@
-# Core dependencies
+# Core dependencies (Python 3.11+; keep in sync with pyproject.toml)
 opencv-python>=4.8.0
 numpy>=1.24.0
-torch>=2.0.0
-Pillow>=10.0.0
+torch>=2.14.0
+Pillow>=12.3.0
 tqdm>=4.65.0
-sentence-transformers>=2.2.0
+sentence-transformers>=6.0.1
+transformers>=5.16.1
+filelock>=3.20.3
+requests>=2.33.0
+urllib3>=2.7.0
 
-# Optional: Emotion scoring (GPL-3.0 licensed)
-# deepface>=0.0.80
+# Optional: Emotion scoring (DeepFace wrapper is MIT licensed)
+# Install the complete backend with: pip install -e ".[emotion]"
 
 # Optional: HEIC image support
-# pillow-heif>=0.13.0
+# Install with: pip install -e ".[heic]"

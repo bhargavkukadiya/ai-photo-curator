@@ -21,6 +21,7 @@ from photo_curator.models import (
     LEGACY_MANIFEST_FILENAME,
     MANIFEST_FILENAME,
     ScoredImage,
+    get_deepface,
 )
 from photo_curator.scoring import (
     aesthetic_score_batch,
@@ -33,7 +34,7 @@ from photo_curator.scoring import (
     technical_score,
 )
 from photo_curator.selection import filter_near_duplicates
-from photo_curator.storage import copy_top_images, export_scores_csv
+from photo_curator.storage import copy_top_images, export_scores_csv, file_identity
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,9 +48,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="AI-based photo selector for albums.",
     )
-    parser.add_argument(
-        "--input", required=True, help="Input folder with photos"
-    )
+    parser.add_argument("--input", required=True, help="Input folder with photos")
     parser.add_argument(
         "--output", required=True, help="Output folder for selected photos"
     )
@@ -117,24 +116,20 @@ def main() -> None:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Allow overwriting non-empty output directory or preview CSV",
+        help="Reuse a non-empty album and replace tracked photos or an existing preview CSV; untracked photo collisions are rejected",
     )
     args = parser.parse_args()
 
     # --- Input validation ---------------------------------------------------
     input_path = Path(args.input)
     if not input_path.is_dir():
-        parser.error(
-            f"Input path does not exist or is not a directory: {input_path}"
-        )
+        parser.error(f"Input path does not exist or is not a directory: {input_path}")
 
     if args.target <= 0:
         parser.error(f"--target must be a positive integer, got {args.target}")
 
     if args.batch_size <= 0:
-        parser.error(
-            f"--batch_size must be a positive integer, got {args.batch_size}"
-        )
+        parser.error(f"--batch_size must be a positive integer, got {args.batch_size}")
 
     # Validate weights are finite non-negative floats
     for name, val in [
@@ -143,11 +138,11 @@ def main() -> None:
         ("--weight_emotion", args.weight_emotion),
     ]:
         if not math.isfinite(val) or val < 0:
-            parser.error(
-                f"{name} must be a finite non-negative number, got {val}"
-            )
+            parser.error(f"{name} must be a finite non-negative number, got {val}")
 
     use_deepface = (not args.no_deepface) and DEEPFACE_AVAILABLE
+    if use_deepface:
+        use_deepface = get_deepface() is not None
 
     active_weight_sum = args.weight_technical + args.weight_aesthetic
     if use_deepface:
@@ -180,9 +175,7 @@ def main() -> None:
     resolved_input = input_path.resolve()
 
     if output_path.exists() and not output_path.is_dir():
-        parser.error(
-            f"--output path '{output_path}' exists and is not a directory."
-        )
+        parser.error(f"--output path '{output_path}' exists and is not a directory.")
 
     if output_path == resolved_input or resolved_input.is_relative_to(output_path):
         parser.error(
@@ -209,11 +202,12 @@ def main() -> None:
 
     # Validate preview CSV path
     if args.preview_csv:
-        csv_path = Path(args.preview_csv).resolve()
+        raw_csv_path = Path(args.preview_csv).absolute()
+        if raw_csv_path.is_symlink():
+            parser.error("--preview_csv must not be a symlink.")
+        csv_path = raw_csv_path.parent.resolve() / raw_csv_path.name
         if csv_path.exists() and csv_path.is_dir():
-            parser.error(
-                f"--preview_csv path '{csv_path}' is a directory, not a file."
-            )
+            parser.error(f"--preview_csv path '{csv_path}' is a directory, not a file.")
         if csv_path == resolved_input:
             parser.error(
                 f"--preview_csv path '{csv_path}' cannot be the input directory."
@@ -234,6 +228,10 @@ def main() -> None:
             parser.error(
                 f"--preview_csv file '{csv_path}' already exists. Specify --overwrite to replace it."
             )
+        try:
+            csv_identity = file_identity(csv_path)
+        except RuntimeError as e:
+            parser.error(str(e))
 
     # --- Collect images (excluding output directory if inside input) ---------
     images: list[Path] = []
@@ -254,9 +252,11 @@ def main() -> None:
 
     # Prevent preview CSV collision with collected source images
     if args.preview_csv:
-        resolved_csv = Path(args.preview_csv).resolve()
+        resolved_csv = csv_path
         for img_p in images:
-            if img_p.resolve() == resolved_csv:
+            if img_p.resolve() == resolved_csv or (
+                resolved_csv.exists() and resolved_csv.samefile(img_p)
+            ):
                 parser.error(
                     f"--preview_csv path '{resolved_csv}' conflicts with an input photo ({img_p.name})."
                 )
@@ -271,9 +271,7 @@ def main() -> None:
     scored_images: list[ScoredImage] = []
     need_embeddings = args.dedup_threshold is not None
 
-    for i in tqdm(
-        range(0, len(images), args.batch_size), desc="Scoring Batches"
-    ):
+    for i in tqdm(range(0, len(images), args.batch_size), desc="Scoring Batches"):
         batch_paths = images[i : i + args.batch_size]
         batch_pil: list[Image.Image] = []
         batch_cv: list[np.ndarray] = []
@@ -357,9 +355,7 @@ def main() -> None:
     # --- Copy top images ----------------------------------------------------
     if not args.dryrun:
         try:
-            copy_top_images(
-                selected_images, output_path, overwrite=args.overwrite
-            )
+            copy_top_images(selected_images, output_path, overwrite=args.overwrite)
         except RuntimeError as e:
             logger.error("Failed to complete copying: %s", e)
             sys.exit(1)
@@ -380,9 +376,18 @@ def main() -> None:
                 statuses[s.path] = "Duplicate_Suppressed"
             else:
                 statuses[s.path] = "Rank_Cutoff"
-        export_scores_csv(
-            scored_images, Path(args.preview_csv), statuses=statuses
-        )
+        try:
+            export_scores_csv(
+                scored_images,
+                csv_path,
+                statuses=statuses,
+                overwrite=args.overwrite,
+                protected_paths=images,
+                expected_identity=csv_identity,
+            )
+        except (OSError, RuntimeError) as e:
+            logger.error("Failed to export preview CSV: %s", e)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

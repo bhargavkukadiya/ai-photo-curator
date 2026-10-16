@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import torch
@@ -11,13 +13,24 @@ import torch
 logger = logging.getLogger(__name__)
 
 # Optional dependencies detection
-try:
-    from deepface import DeepFace
+DEEPFACE_AVAILABLE = importlib.util.find_spec("deepface") is not None
 
-    DEEPFACE_AVAILABLE = True
-except ImportError as e:
-    logger.info("DeepFace not found; emotion scoring disabled. (%s)", e)
-    DEEPFACE_AVAILABLE = False
+
+@lru_cache(maxsize=1)
+def get_deepface():
+    """Initialize the optional backend only when emotion scoring is requested."""
+    if not DEEPFACE_AVAILABLE:
+        return None
+    try:
+        from deepface import DeepFace
+
+        return DeepFace
+    except (ImportError, ValueError, RuntimeError, OSError) as exc:
+        logger.warning(
+            "DeepFace could not initialize; emotion scoring disabled: %s", exc
+        )
+        return None
+
 
 try:
     import pillow_heif
@@ -39,6 +52,10 @@ SUPPORTED_EXTENSIONS: set[str] = {
 if HEIC_SUPPORTED:
     SUPPORTED_EXTENSIONS.add(".heic")
     SUPPORTED_EXTENSIONS.add(".heif")
+
+SUPPORTED_FORMATS = ("JPEG", "PNG", "WEBP", "BMP", "TIFF") + (
+    ("HEIF",) if HEIC_SUPPORTED else ()
+)
 
 DEFAULT_WEIGHT_TECHNICAL = 0.4
 DEFAULT_WEIGHT_AESTHETIC = 0.4

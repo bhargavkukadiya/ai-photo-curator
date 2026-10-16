@@ -49,3 +49,12 @@ __all__ = [
     "test_interrupted_rollback_preserves_recovery_files",
     "test_competing_process_is_rejected_before_manifest_access",
 ]
+
+# Keep the legacy runner aligned with new function-based regression suites.
+from tests import test_optional_backends, test_regressions
+
+for _module in (test_optional_backends, test_regressions):
+    for _name, _test in vars(_module).items():
+        if _name.startswith("test_") and callable(_test):
+            globals()[_name] = _test
+            __all__.append(_name)

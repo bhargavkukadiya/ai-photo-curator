@@ -21,8 +21,13 @@ def filter_near_duplicates(
 
     Assumes *scored_images* is pre-sorted descending by score.
     Iteratively selects the highest scoring candidate that is not too similar
-    (cosine similarity >= threshold) to any already selected candidate.
+    (cosine similarity >= threshold or identical embeddings) to any already
+    selected candidate. With no threshold, selection follows score order.
     Uses vectorized PyTorch tensor comparisons for high performance.
+
+    Stops when target_count is reached. With return_suppressed=True, also returns
+    paths rejected as duplicates before that cutoff; later candidates are not
+    checked and must not be treated as proven distinct.
     """
     if threshold is None or threshold > 1.0 or not scored_images:
         selected = scored_images[:target_count] if target_count else scored_images
@@ -51,7 +56,9 @@ def filter_near_duplicates(
             if stacked_selected.ndim == 3 and stacked_selected.shape[1] == 1:
                 stacked_selected = stacked_selected.squeeze(1)
             sims = util.cos_sim(cand_emb, stacked_selected)
-            if (sims >= threshold).any():
+            # Float32 cosine can round just below one for identical vectors.
+            exact_match = (stacked_selected == cand_emb).all(dim=1).any()
+            if exact_match or (sims >= threshold).any():
                 is_duplicate = True
                 suppressed_paths.add(candidate.path)
 

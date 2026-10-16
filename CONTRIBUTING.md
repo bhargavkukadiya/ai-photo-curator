@@ -13,6 +13,7 @@ We welcome contributions of all kinds: bug reports, documentation improvements, 
 - [Development Setup](#development-setup)
 - [Coding Guidelines](#coding-guidelines)
 - [Running Tests](#running-tests)
+- [CI Coverage](#ci-coverage)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Issues](#reporting-issues)
 
@@ -41,68 +42,105 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 
 ## Development Setup
 
-We recommend using a virtual environment:
+Use Python 3.11 or newer. The locked setup matches CI and creates `.venv` automatically:
 
 ```bash
-# 1. Create a virtual environment with Python 3.9+
+python -m pip install --upgrade uv
+uv sync --frozen --extra dev
+uv run --frozen --extra dev ai-photo-curator --help
+```
+
+Alternatively, install from the package constraints with pip in an activated virtual environment:
+
+```bash
+# 1. Create a virtual environment with Python 3.11+
 python3 -m venv .venv
 
 # 2. Activate the virtual environment
 # macOS / Linux:
 source .venv/bin/activate
-# Windows:
-# .venv\Scripts\activate
-
+# Windows PowerShell:
+# .\.venv\Scripts\Activate.ps1
 # 3. Upgrade pip
 python -m pip install --upgrade pip
 
 # 4. Install in editable development mode with test dependencies
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 Optional dependencies can also be installed:
+
 ```bash
 # Optional: Facial emotion scoring (DeepFace)
-pip install -e ".[emotion]"
+python -m pip install -e ".[dev,emotion]"
 
 # Optional: HEIC/HEIF photo support
-pip install -e ".[heic]"
+python -m pip install -e ".[dev,heic]"
 
 # Or install everything:
-pip install -e ".[all,dev]"
+python -m pip install -e ".[all,dev]"
 ```
+
+For the locked optional-backend environment, use `uv sync --frozen --extra dev --extra emotion --extra heic` and include those same extras in subsequent `uv run` commands.
 
 ---
 
 ## Coding Guidelines
 
-- **Python Version:** Support Python 3.9, 3.10, 3.11, and 3.12.
+- **Python Version:** Support Python 3.11, 3.12, and 3.13.
 - **Type Annotations:** Use PEP 484 and PEP 604 type annotations (`int | None`, `list[str]`, etc.). Include `from __future__ import annotations` at the top of all new modules.
 - **Docstrings:** Document all public functions, classes, and CLI parameters using Google or PEP 257 style docstrings. Explain the *why* and operational constraints, not just the *what*.
 - **Error Handling:** Avoid bare `except:` clauses. Catch specific exceptions and log helpful context.
 - **Memory Safety:** When processing images, avoid keeping uncompressed full-resolution bitmaps in long-lived variables or batch lists.
-- **Filesystem Operations:** Always adhere to the non-destructive two-phase commit paradigm: write to staging, validate, atomic commit, and rollback on error. Never overwrite untracked files without `--overwrite`.
+- **Filesystem Operations:** Stage and validate writes before publication, then attempt rollback on commit errors. Individual hard links are atomic; an album update and the exclusive-stream fallback are not atomic snapshots. Never overwrite untracked photo destinations, even with `--overwrite`. Record transaction intent before mutations and retain backups when ownership or restoration is uncertain. Stage CSV reports and replace permitted destinations without truncating existing inodes.
 
 ---
 
 ## Running Tests
 
-All unit tests run fast in-memory using mocked neural network models with zero network overhead:
+Core tests mock neural inference; optional backend smoke tests run when the corresponding extras are installed:
 
 ```bash
-# Run the complete test suite (via pytest or uv)
-pytest -v
-# or with uv:
-uv run pytest -v
+# Run the complete suite against the locked core and test dependencies
+uv run --frozen --extra dev pytest -v
 
+# Include real optional-backend initialization and HEIF roundtrip checks
+uv run --frozen --extra dev --extra emotion --extra heic pytest -v
+
+# For the pip development environment, use: python -m pytest -v
 # Run a specific test module or method
-pytest tests/test_selection.py -k "TestFilterNearDuplicates" -v
+uv run --frozen --extra dev pytest tests/test_selection.py -k "TestFilterNearDuplicates" -v
 
 # Check for syntax errors across all modules
-python3 -m py_compile album_selector.py $(find src tests -name "*.py")
+uv run --frozen --extra dev python -m compileall -q src tests scripts album_selector.py test_album_selector.py setup.py
+
+# Check the legacy test entrypoint
+uv run --frozen --extra dev pytest test_album_selector.py -v
+
+# Build the distribution
+uv build --wheel
+
+# Audit every locked registry package/version (requires network access)
+uv run --no-project --python 3.12 --with pip-audit python scripts/audit_lock.py
 ```
 
 Ensure all tests pass cleanly with **zero failures** and **zero new warnings** before opening a pull request.
+
+The two optional smoke tests are skipped when their extras are absent. They initialize DeepFace and perform a HEIF encode/decode roundtrip without downloading facial model weights or running real-face emotion inference. The core suite mocks CLIP inference.
+
+---
+
+## CI Coverage
+
+The [CI workflow](.github/workflows/ci.yml) currently runs:
+
+| Job | Platforms / Python | Checks |
+| --- | --- | --- |
+| Core | Ubuntu: 3.11, 3.12, 3.13; macOS and Windows: 3.12 | Frozen core/dev installation, full suite, wheel build, imports outside the checkout, and both console entrypoints |
+| Optional backends | Ubuntu: 3.12 | Frozen dev/emotion/HEIC installation and full suite including the real backend smoke checks |
+| Security | Ubuntu: 3.12 | Advisory audit of every distinct registry package/version in `uv.lock`, including alternate versions and extras |
+
+`scripts/check_wheel.py` expects one wheel in `dist/` and replaces the editable package in its calling environment with that wheel. CI runs it after the tests. Use a disposable environment if running that script locally.
 
 ---
 
@@ -116,7 +154,7 @@ Ensure all tests pass cleanly with **zero failures** and **zero new warnings** b
 3. **Add or update unit tests** covering your new functionality or bug fix.
 4. **Run the test suite** to ensure no regressions:
    ```bash
-   pytest -v
+   uv run --frozen --extra dev pytest -v
    ```
 5. **Push your branch** to your fork:
    ```bash

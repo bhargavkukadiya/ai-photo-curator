@@ -13,12 +13,31 @@ from unittest import mock
 import pytest
 
 from photo_curator.models import ScoredImage
-from photo_curator.storage import copy_top_images, export_scores_csv
+from photo_curator.storage import copy_top_images, export_scores_csv, file_identity
 from tests.conftest import save_test_image
 
 
 class TestExportScoresCSV:
     """Test CSV output via export_scores_csv()."""
+
+    def test_prevalidated_parent_redirection_is_rejected(self, tmp_path):
+        parent = tmp_path.resolve() / "reports"
+        parent.mkdir()
+        csv_path = parent / "scores.csv"
+        expected_identity = file_identity(csv_path)
+        parent.rename(tmp_path / "original_reports")
+        redirected = tmp_path / "redirected_reports"
+        redirected.mkdir()
+        try:
+            parent.symlink_to(redirected, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"Directory symlinks unavailable: {exc}")
+
+        with pytest.raises(RuntimeError, match="resolves through a symlink"):
+            export_scores_csv([], csv_path, expected_identity=expected_identity)
+
+        assert not (redirected / "scores.csv").exists()
+        assert not list(redirected.iterdir())
 
     def test_header_and_values(self, tmp_path):
         """CSV should have the correct header and formatted values."""
@@ -232,19 +251,18 @@ class TestCopyTopImages:
         copy_top_images(scored_old, out_dir)
         assert (out_dir / "1_old.jpg").exists()
 
-        # Run 2: commit failure simulated during os.replace on manifest
+        # Fail the no-clobber manifest publication after the photos were committed.
         new_img = src_dir / "new.jpg"
         save_test_image(new_img)
         scored_new = [ScoredImage(new_img, 0.95, 0.5, 0.5, 0.0)]
+        from photo_curator.storage import _publish_new_file
 
-        orig_replace = os.replace
+        def failing_publish(src, dst, journal):
+            if Path(dst).name == ".curator_manifest.json" and ".curator_stage_" in str(src):
+                raise OSError("Simulated disk error publishing manifest")
+            return _publish_new_file(src, dst, journal)
 
-        def failing_replace(src, dst):
-            if str(dst).endswith(".curator_manifest.json") and ".curator_stage_" in str(src):
-                raise OSError("Simulated disk error replacing manifest")
-            return orig_replace(src, dst)
-
-        with mock.patch("os.replace", side_effect=failing_replace):
+        with mock.patch("photo_curator.storage._publish_new_file", side_effect=failing_publish):
             with pytest.raises(RuntimeError, match="Commit phase failed and was rolled back"):
                 copy_top_images(scored_new, out_dir, overwrite=True)
 
@@ -253,6 +271,7 @@ class TestCopyTopImages:
         manifest_data = json.loads((out_dir / ".curator_manifest.json").read_text(encoding="utf-8"))
         assert manifest_data["files"] == ["1_old.jpg"]
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows forbids control characters in filenames")
     def test_newline_in_filename_handled_safely_by_json_manifest(self, tmp_path):
         """Newlines in filenames should be preserved safely without corrupting JSON manifest."""
         out_dir = tmp_path / "out"
@@ -396,16 +415,21 @@ class TestCopyTopImages:
         save_test_image(new_img)
         scored_new = [ScoredImage(new_img, 0.95, 0.5, 0.5, 0.0)]
 
-        original_replace = os.replace
+        from photo_curator.storage import _publish_new_file, _restore_backup
 
-        def failing_replace(src, dst):
-            if str(dst).endswith(".curator_manifest.json") and ".curator_stage_" in str(src):
+        def failing_publish(src, dst, journal):
+            if Path(dst).name == ".curator_manifest.json" and ".curator_stage_" in str(src):
                 raise OSError("Commit disk error")
-            if ".curator_backup_" in str(src) and str(dst).endswith("1_old.jpg"):
-                raise OSError("Rollback restore error")
-            return original_replace(src, dst)
+            return _publish_new_file(src, dst, journal)
 
-        with mock.patch("os.replace", side_effect=failing_replace):
+        def failing_restore(src, dst):
+            if Path(dst).name == "1_old.jpg":
+                raise OSError("Rollback restore error")
+            return _restore_backup(src, dst)
+
+        with mock.patch("photo_curator.storage._publish_new_file", side_effect=failing_publish), mock.patch(
+            "photo_curator.storage._restore_backup", side_effect=failing_restore
+        ):
             with pytest.raises(RuntimeError, match="Recovery files preserved in"):
                 copy_top_images(scored_new, out_dir, overwrite=True)
 
