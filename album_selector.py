@@ -18,8 +18,6 @@ if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
 # Re-exported for mock compatibility in existing unit tests
 import sentence_transformers.util as util
 
-DeepFace = None
-
 from photo_curator.cli import logger, main
 from photo_curator.models import (
     DEEPFACE_AVAILABLE,

@@ -14,7 +14,11 @@ _SRC_DIR = Path(__file__).resolve().parent / "src"
 if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from tests.test_cli import TestCLIValidation, test_preview_inside_fresh_output
+from tests.test_cli import (  # photo_dir is a fixture TestCLIValidation needs
+    TestCLIValidation,
+    photo_dir,  # noqa: F401
+    test_preview_inside_fresh_output,
+)
 from tests.test_scoring import (
     TestAestheticScore,
     TestCalculateTotalScore,
@@ -51,9 +55,9 @@ __all__ = [
 ]
 
 # Keep the legacy runner aligned with new function-based regression suites.
-from tests import test_optional_backends, test_regressions
+from tests import test_optional_backends, test_regressions, test_selection
 
-for _module in (test_optional_backends, test_regressions):
+for _module in (test_optional_backends, test_regressions, test_selection):
     for _name, _test in vars(_module).items():
         if _name.startswith("test_") and callable(_test):
             globals()[_name] = _test

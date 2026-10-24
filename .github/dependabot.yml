@@ -7,8 +7,8 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  # Maintain Python pip dependencies
-  - package-ecosystem: "pip"
+  # Maintain Python dependencies, updating uv.lock together with pyproject.toml
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

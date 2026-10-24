@@ -38,7 +38,7 @@
   - **Technical Quality (40%)**: Standardized Laplacian variance for edge sharpness plus normalized luminance exposure.
   - **Aesthetic Quality (40%)**: Batched OpenAI CLIP (`ViT-B/32`) cosine similarity scored against configurable semantic reference prompts.
   - **Facial Emotion Detection (20%, optional)**: DeepFace facial analysis to prioritize genuine smiles and joy in group and portrait photos.
-- ⚡ **Vectorized Burst-Shot Deduplication**: Rapid PyTorch tensor matrix comparison (`torch.matmul`) suppressing redundant burst shots by embedding cosine similarity (`--dedup_threshold`).
+- ⚡ **Vectorized Burst-Shot Deduplication**: Selected embeddings are kept unit-normalized in one preallocated matrix, so each candidate costs a single matrix-vector product when suppressing redundant burst shots by cosine similarity (`--dedup_threshold`).
 - 🛡️ **Two-Phase Transactional Commit**:
   - Isolated temporary staging (`.curator_stage_*`) with automatic rollback on errors.
   - Non-destructive JSON manifest tracking (`.curator_manifest.json`) and untracked-file protection.
@@ -129,6 +129,7 @@ The following measurements were recorded for the original v1.0.0 release; they a
 | **Retained Batch Memory (32 Photos in RAM)** | ~9.2 GB uncompressed | **~151 MB** downscaled | Prevents cumulative batch accumulation |
 | **Transient Decode Peak (Single 48MP JPEG)** | ~569 MiB peak RSS | ~569 MiB peak RSS | Full-resolution initial decode & EXIF transpose |
 | **Original Release Test Suite (95 tests)** | N/A | **~2.4s** | Fast isolated mock & unit tests |
+| **Distinct-Photo Deduplication (5,000 selected, 512-d)** | `3.7s` (re-stacked selections) | **`0.15s`** (preallocated unit matrix) | Unreleased; one Apple Silicon CPU run, `--target 5000` |
 
 > [!NOTE]
 > The ~4.72 MB buffer example is for an 8000×6000 image resized to 1024×768. A square image can retain two 1024×1024 RGB/BGR buffers (~6.29 MB combined, or ~201 MB for 32 photos). These figures cover pixel buffers only. Full-resolution decoding, EXIF transposition, high-bit-depth conversion, model weights, and inference need additional memory.
@@ -294,7 +295,7 @@ ai-photo-curator --input ./travel --output ./album --ref_text "stunning architec
 | `--ref_text` | `str` | `"a beautiful photograph"` | Reference semantic prompt for aesthetic scoring. |
 | `--weight_technical` | `float` | `0.4` | Weight for technical quality (sharpness + exposure). |
 | `--weight_aesthetic` | `float` | `0.4` | Weight for CLIP aesthetic quality. |
-| `--weight_emotion` | `float` | `0.2` | Weight for facial emotion happiness score. |
+| `--weight_emotion` | `float` | `0.2` | Weight for facial emotion happiness score. `0` skips loading and running DeepFace. |
 | `--dedup_threshold` | `float` | `None` | Cosine similarity threshold `[0.0-1.0]` for duplicate suppression (e.g. `0.90`). |
 | `--no_deepface` | `flag` | `false` | Disable facial emotion detection. |
 | `--overwrite` | `flag` | `false` | Reuse a nonempty album, replace manifest-tracked photos, and permit replacement of an existing preview CSV. Untracked photo collisions are rejected. |
@@ -302,7 +303,7 @@ ai-photo-curator --input ./travel --output ./album --ref_text "stunning architec
 
 `--target` and `--batch_size` must be positive integers. Weights must be finite and non-negative, with at least one positive active weight. `--dedup_threshold` must be finite and within `[0.0, 1.0]`; `1.0` also suppresses identical embeddings despite cosine roundoff. The requested device must be available.
 
-The output cannot equal or contain the input directory. An output nested inside the input is allowed and excluded from discovery. An existing nonempty output requires `--overwrite` for a copy run. Preview destinations must not be directories, symlinks, source-photo aliases, manifest filenames, or supported image filenames. Reports are exported after the album commit, so an export failure does not undo a successfully copied album.
+The output cannot equal or contain the input directory. An output nested inside the input is allowed and excluded from discovery. Earlier albums nested inside the input (directories holding `.curator_manifest.json` or `.curator_manifest.txt`) are also skipped, so their copies do not compete with the originals; an input that is itself an album is still scanned. An existing nonempty output requires `--overwrite` for a copy run. Preview destinations must not be directories, symlinks, source-photo aliases, manifest filenames, or supported image filenames. Reports are exported after the album commit, so an export failure does not undo a successfully copied album.
 
 ---
 
@@ -355,7 +356,7 @@ Photo Curator enforces strict filesystem integrity guarantees:
 5. **Untracked File Safety**: Photo and manifest publication use no-clobber operations. `--overwrite` permits reuse of a nonempty album and replacement of tracked files; it does not permit clobbering untracked photo destinations. The output directory must remain under the caller’s control during a run; the lock coordinates curator processes, not arbitrary external writers.
 6. **Exclusive Album Writes**: An atomic lock directory beside the album (`.<album-name>.curator.lock`) rejects overlapping writers before manifest inspection. It is removed after success, failure, or Ctrl-C. After SIGKILL or a crash, confirm no writer is running and inspect any `.curator_backup_*` recovery directories before manually removing an abandoned lock.
 
-CSV reports are staged before publication. Existing reports require `--overwrite`; symlinks and source-photo aliases are rejected. Allowed replacement swaps the directory entry instead of truncating the existing inode, preserving any other hard links. Formula-like path cells are prefixed with an apostrophe for spreadsheet safety. Reports are written after successful photo copying, so `--preview_csv ./album/scores.csv` works for a fresh album without `--overwrite`. With `--dryrun`, the CSV is written without copying photos.
+CSV reports are staged before publication. Existing reports require `--overwrite`; symlinks and source-photo aliases are rejected. Allowed replacement swaps the directory entry instead of truncating the existing inode, preserving any other hard links and keeping the replaced report's permission bits; new reports get the usual umask-based permissions. Formula-like path cells are prefixed with an apostrophe for spreadsheet safety. Reports are written after successful photo copying, so `--preview_csv ./album/scores.csv` works for a fresh album without `--overwrite`. With `--dryrun`, the CSV is written without copying photos.
 
 ---
 

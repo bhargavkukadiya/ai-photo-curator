@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Require Python 3.11+ to remove vulnerable legacy dependency branches; refresh the lockfile and enforce security floors for core and optional backends.
 - Initialize DeepFace lazily and include its TensorFlow compatibility backend in the emotion extra.
 - Use `pyproject.toml` as the single source of package metadata, retaining `setup.py` as a compatibility shim.
+- Keep selected deduplication embeddings unit-normalized in one preallocated matrix; selecting 5,000 distinct photos drops from ~3.7s to ~0.15s.
+- Skip DeepFace entirely when `--weight_emotion` is 0, since it cannot affect ranking.
+- Skip earlier curated albums (directories with a curator manifest) nested inside the input during discovery.
+- `emotion_score` no longer reads overrides from the `album_selector` shim module; patch `photo_curator.scoring.DeepFace` instead.
+- Dependabot now updates `uv.lock` (uv ecosystem), and CI fails when the lockfile is out of date with `pyproject.toml`.
 
 ### Fixed
 
@@ -25,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove exact duplicate embeddings at cosine threshold 1.0 despite floating-point roundoff.
 - Normalize large finite scoring weights without overflow and reject non-finite component scores.
 - Reject empty image arrays with a clear `ValueError` before technical scoring.
+- Reject non-uint8 arrays in `technical_score` instead of silently misscoring them (uint16 mid-gray scored 0.0, floats crashed OpenCV); score gray+alpha arrays from their gray channel.
+- Configure logging only when the CLI runs, so importing `photo_curator` no longer installs a root handler.
+- Give new preview CSVs umask-default permissions instead of owner-only `0600`, and keep a replaced report's mode.
+- Assert specific validation messages in CLI tests; several previously passed on unrelated errors such as a missing relative input path or an unparseable device string.
 - Report missing or ambiguous wheel artifacts before attempting the wheel smoke-test installation.
 - Document canonical CSV parent paths for prevalidated exports and cover parent symlink redirection with a regression test.
 - Correct safety, memory, and DeepFace package-license documentation; clarify EXIF preservation and CSV cutoff semantics.

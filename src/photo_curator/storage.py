@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import os
+import secrets
 import shutil
 import stat
 import tempfile
@@ -112,6 +113,32 @@ def _restore_backup(backup: Path, destination: Path) -> None:
     backup.unlink()
 
 
+_STAGED_REPORT_FLAGS = (
+    os.O_CREAT
+    | os.O_EXCL
+    | os.O_WRONLY
+    | getattr(os, "O_BINARY", 0)  # Windows: no CRT newline translation
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+
+
+def _create_staged_report(directory: Path, mode: int) -> tuple[int, Path]:
+    """Exclusively create a hidden staging file before any content is written.
+
+    *mode* is passed to open(), so the kernel applies the caller's umask (and
+    any default ACL) without this process reading or changing the umask, which
+    other threads share. Use 0o666 for an ordinary new file and 0o600 when the
+    contents must stay private until permissions are finalized.
+    """
+    for _ in range(100):
+        path = directory / f".curator_csv_{secrets.token_hex(8)}"
+        try:
+            return os.open(path, _STAGED_REPORT_FLAGS, mode), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"Could not create a unique staging file in '{directory}'.")
+
+
 def _check_csv_sources(csv_path: Path, protected_paths: Sequence[Path]) -> None:
     for source in protected_paths:
         if source.resolve() == csv_path or (
@@ -160,8 +187,16 @@ def export_scores_csv(
         raise RuntimeError(
             f"Preview CSV '{csv_path}' already exists or changed during scoring."
         )
-    fd, name = tempfile.mkstemp(dir=csv_path.parent, prefix=".curator_csv_")
-    staged = Path(name)
+    # A replacement keeps the permissions of the report it replaces, applied
+    # only after writing; until then it stays owner-only so a private report is
+    # never exposed through a broader umask default. A new report keeps the
+    # umask-derived mode it was created with.
+    replaced_mode = (
+        stat.S_IMODE(csv_path.lstat().st_mode) if current is not None else None
+    )
+    fd, staged = _create_staged_report(
+        csv_path.parent, 0o666 if replaced_mode is None else 0o600
+    )
     journal: list[_Publication] = []
     try:
         with open(fd, "w", newline="", encoding="utf-8", closefd=True) as f:
@@ -185,6 +220,8 @@ def export_scores_csv(
                 writer.writerow(row)
             f.flush()
             os.fsync(f.fileno())
+        if replaced_mode is not None:
+            os.chmod(staged, replaced_mode)
         if csv_path.parent.resolve() != csv_path.parent:
             raise RuntimeError("Preview CSV parent changed during export.")
         _check_csv_sources(csv_path, protected)
@@ -390,7 +427,9 @@ def _copy_top_images_locked(
         backup_dir = Path(tempfile.mkdtemp(dir=output_path, prefix=".curator_backup_"))
 
         # Step 1: Copy all images into the staging directory
-        for scored, filename in zip(tqdm(images, desc="Copying"), new_manifest_entries):
+        for scored, filename in zip(
+            tqdm(images, desc="Copying"), new_manifest_entries, strict=True
+        ):
             staged_dest = staging_dir / filename
             try:
                 shutil.copy2(scored.path, staged_dest)

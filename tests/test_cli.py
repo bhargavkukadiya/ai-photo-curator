@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from unittest import mock
 
 import pytest
@@ -13,106 +13,125 @@ from photo_curator.cli import main
 from tests.conftest import save_test_image
 
 
+def run_cli_error(argv: list[str], capsys) -> str:
+    """Run main() expecting an argparse validation failure; return its message."""
+    with mock.patch("sys.argv", ["photo-curator", *argv]):
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 2
+    return capsys.readouterr().err
+
+
+@pytest.fixture
+def photo_dir(tmp_path):
+    """An input directory holding one readable photo."""
+    input_dir = tmp_path / "input"
+    save_test_image(input_dir / "photo.jpg")
+    return input_dir
+
+
 class TestCLIValidation:
-    """Tests for CLI argument validation and error handling."""
+    """Tests for CLI argument validation and error handling.
 
-    def test_batch_size_passed_to_encode(self):
-        """Batch size should be validated as a positive integer."""
-        test_args = ["photo-curator", "--input", "./sample_photos", "--output", "./out", "--batch_size", "0"]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
+    Each test asserts the specific validation message, so an earlier unrelated
+    failure (such as a missing input directory) cannot make it pass.
+    """
 
-    def test_nan_weight_validation(self):
+    def test_batch_size_must_be_positive(self, photo_dir, tmp_path, capsys):
+        err = run_cli_error(
+            ["--input", str(photo_dir), "--output", str(tmp_path / "out"), "--batch_size", "0"],
+            capsys,
+        )
+        assert "--batch_size must be a positive integer" in err
+
+    def test_nan_weight_validation(self, photo_dir, tmp_path, capsys):
         """NaN weights should trigger an argparse validation error."""
-        test_args = ["photo-curator", "--input", "./sample_photos", "--output", "./out", "--weight_technical", "nan"]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
+        err = run_cli_error(
+            ["--input", str(photo_dir), "--output", str(tmp_path / "out"), "--weight_technical", "nan"],
+            capsys,
+        )
+        assert "--weight_technical must be a finite non-negative number" in err
 
-    def test_device_assertion_error_handled(self):
+    def test_device_assertion_error_handled(self, photo_dir, tmp_path, capsys):
         """Device initialization raising AssertionError should be caught gracefully."""
-        test_args = ["photo-curator", "--input", "./sample_photos", "--output", "./out", "--device", "invalid_cuda"]
-        with mock.patch("sys.argv", test_args):
-            with mock.patch("torch.zeros", side_effect=AssertionError("Torch not compiled with CUDA")):
-                with pytest.raises(SystemExit):
-                    main()
+        # "cuda" parses as a device type, so the failure comes from allocation.
+        with mock.patch("torch.zeros", side_effect=AssertionError("Torch not compiled with CUDA")):
+            err = run_cli_error(
+                ["--input", str(photo_dir), "--output", str(tmp_path / "out"), "--device", "cuda"],
+                capsys,
+            )
+        assert "Invalid or unavailable --device 'cuda'" in err
+        assert "Torch not compiled with CUDA" in err
 
-    def test_preview_csv_collision_with_input_image(self, tmp_path):
-        """Preview CSV path conflicting with an input image should trigger validation error."""
-        img = tmp_path / "photo.jpg"
-        save_test_image(img)
+    def test_unparseable_device_rejected(self, photo_dir, tmp_path, capsys):
+        err = run_cli_error(
+            ["--input", str(photo_dir), "--output", str(tmp_path / "out"), "--device", "invalid_cuda"],
+            capsys,
+        )
+        assert "Invalid or unavailable --device 'invalid_cuda'" in err
 
-        test_args = [
-            "photo-curator",
-            "--input", str(tmp_path),
-            "--output", str(tmp_path / "out"),
-            "--preview_csv", str(img),
-        ]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
+    def test_preview_csv_with_image_extension_rejected(self, photo_dir, tmp_path, capsys):
+        """A preview path with an image extension (here, an input photo) is rejected."""
+        err = run_cli_error(
+            [
+                "--input", str(photo_dir),
+                "--output", str(tmp_path / "out"),
+                "--preview_csv", str(photo_dir / "photo.jpg"),
+            ],
+            capsys,
+        )
+        assert "conflicts with an image file extension" in err
 
-    def test_preview_csv_is_dir_raises_error(self, tmp_path):
+    def test_preview_csv_hard_link_to_input_photo_rejected(self, photo_dir, tmp_path, capsys):
+        """A .csv path that is a hard link to an input photo must not replace its bytes."""
+        alias = tmp_path / "scores.csv"
+        try:
+            os.link(photo_dir / "photo.jpg", alias)
+        except OSError as e:
+            pytest.skip(f"hard links unavailable: {e}")
+        err = run_cli_error(
+            [
+                "--input", str(photo_dir),
+                "--output", str(tmp_path / "out"),
+                "--preview_csv", str(alias),
+                "--overwrite",
+                "--dryrun",
+            ],
+            capsys,
+        )
+        assert "conflicts with an input photo (photo.jpg)" in err
+
+    def test_preview_csv_is_dir_raises_error(self, photo_dir, tmp_path, capsys):
         """Preview CSV pointing to an existing directory should trigger validation error."""
         csv_dir = tmp_path / "csv_folder"
         csv_dir.mkdir()
+        err = run_cli_error(
+            ["--input", str(photo_dir), "--output", str(tmp_path / "out"), "--preview_csv", str(csv_dir)],
+            capsys,
+        )
+        assert "is a directory, not a file" in err
 
-        test_args = [
-            "photo-curator",
-            "--input", str(tmp_path),
-            "--output", str(tmp_path / "out"),
-            "--preview_csv", str(csv_dir),
-        ]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
-
-    def test_output_is_file_raises_error(self, tmp_path):
+    def test_output_is_file_raises_error(self, photo_dir, tmp_path, capsys):
         """Output path pointing to an existing file should trigger validation error."""
         out_file = tmp_path / "out_file.txt"
         out_file.write_text("hello")
+        err = run_cli_error(["--input", str(photo_dir), "--output", str(out_file)], capsys)
+        assert "exists and is not a directory" in err
 
-        test_args = [
-            "photo-curator",
-            "--input", str(tmp_path),
-            "--output", str(out_file),
-        ]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
-
-    def test_output_is_input_ancestor_raises_error(self, tmp_path):
+    def test_output_is_input_ancestor_raises_error(self, tmp_path, capsys):
         """Output path being equal to or an ancestor of input should trigger validation error."""
         nested_input = tmp_path / "nested" / "photos"
-        nested_input.mkdir(parents=True)
+        save_test_image(nested_input / "photo.jpg")
+        err = run_cli_error(["--input", str(nested_input), "--output", str(tmp_path)], capsys)
+        assert "cannot be the input directory or an ancestor" in err
 
-        test_args = [
-            "photo-curator",
-            "--input", str(nested_input),
-            "--output", str(tmp_path),
-        ]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
-
-    def test_non_empty_output_requires_overwrite(self, tmp_path):
+    def test_non_empty_output_requires_overwrite(self, photo_dir, tmp_path, capsys):
         """Non-empty output directory without --overwrite should trigger validation error."""
-        input_dir = tmp_path / "input"
-        save_test_image(input_dir / "photo.jpg")
-
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         (out_dir / "existing.jpg").write_text("dummy")
-
-        test_args = [
-            "photo-curator",
-            "--input", str(input_dir),
-            "--output", str(out_dir),
-        ]
-        with mock.patch("sys.argv", test_args):
-            with pytest.raises(SystemExit):
-                main()
+        err = run_cli_error(["--input", str(photo_dir), "--output", str(out_dir)], capsys)
+        assert "is not empty. Specify --overwrite" in err
 
     def test_directory_with_image_extension_ignored_in_discovery(self, tmp_path):
         """A directory named folder.jpg inside the input path should not be treated as an image."""

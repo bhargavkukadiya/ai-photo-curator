@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest import mock
-
 import pytest
 import torch
 
@@ -46,18 +44,8 @@ class TestFilterNearDuplicates:
             ScoredImage(Path("c.jpg"), total=0.7, technical=0.5, aesthetic=0.5, emotion=0.0, embedding=emb3),
         ]
 
-        with mock.patch("photo_curator.selection.util.cos_sim") as mock_sim:
-            def sim_side_effect(t1, t2):
-                if torch.allclose(t1, emb2) and torch.allclose(t2, emb1):
-                    return torch.tensor([[0.98]])
-                return torch.tensor([[0.10]])
-
-            mock_sim.side_effect = sim_side_effect
-
-            selected = filter_near_duplicates(images, threshold=0.90)
-            assert len(selected) == 2
-            assert selected[0].path == Path("a.jpg")
-            assert selected[1].path == Path("c.jpg")
+        selected = filter_near_duplicates(images, threshold=0.90)
+        assert [s.path for s in selected] == [Path("a.jpg"), Path("c.jpg")]
 
     def test_dedup_disabled_when_none(self):
         """When threshold is None, all scored images are returned."""
@@ -87,10 +75,8 @@ class TestFilterNearDuplicates:
             ScoredImage(Path("b.jpg"), total=0.8, technical=0.5, aesthetic=0.5, emotion=0.0, embedding=emb2),
         ]
 
-        with mock.patch("photo_curator.selection.util.cos_sim", return_value=torch.tensor([[1.0]])):
-            selected = filter_near_duplicates(images, threshold=1.0)
-            assert len(selected) == 1
-            assert selected[0].path == Path("a.jpg")
+        selected = filter_near_duplicates(images, threshold=1.0)
+        assert [s.path for s in selected] == [Path("a.jpg")]
 
     def test_vectorized_dedup_multiple_candidates_correctness(self):
         """Vectorized deduplication correctly tracks multiple chosen candidates."""
@@ -113,3 +99,104 @@ class TestFilterNearDuplicates:
         )
         assert [s.path for s in selected] == [Path("1.jpg"), Path("3.jpg"), Path("5.jpg")]
         assert suppressed == {Path("2.jpg"), Path("4.jpg")}
+
+
+def _reference_dedup(images, threshold, target_count):
+    """Straightforward pairwise implementation used as a correctness oracle."""
+    selected, suppressed = [], set()
+    for cand in images:
+        unit = torch.nn.functional.normalize(cand.embedding, dim=0)
+        if any(
+            torch.equal(unit, kept) or float(unit @ kept) >= threshold
+            for kept in (torch.nn.functional.normalize(s.embedding, dim=0) for s in selected)
+        ):
+            suppressed.add(cand.path)
+            continue
+        selected.append(cand)
+        if len(selected) >= target_count:
+            break
+    return selected, suppressed
+
+
+@pytest.mark.parametrize("target_count", [5, 40, 400])
+def test_matches_pairwise_reference(target_count):
+    """The preallocated matrix path agrees with a naive pairwise comparison."""
+    gen = torch.Generator().manual_seed(7)
+    bases = torch.randn(30, 16, generator=gen)
+    # Bursts: eight adjacent noisy variants of each base, as from a camera burst.
+    embs = bases.repeat_interleave(8, dim=0) + 0.15 * torch.randn(240, 16, generator=gen)
+    images = [
+        ScoredImage(Path(f"{i}.jpg"), 1.0 - i / 240, 0.5, 0.5, 0.0, embs[i])
+        for i in range(240)
+    ]
+    selected, suppressed = filter_near_duplicates(
+        images, threshold=0.95, target_count=target_count, return_suppressed=True
+    )
+    ref_selected, ref_suppressed = _reference_dedup(images, 0.95, target_count)
+    assert [s.path for s in selected] == [s.path for s in ref_selected]
+    assert suppressed == ref_suppressed
+    assert suppressed  # The fixture must actually exercise suppression.
+
+
+def test_scaled_and_batched_embeddings_are_duplicates():
+    """Cosine ignores magnitude, and (1, d) embeddings are accepted like (d,)."""
+    images = [
+        ScoredImage(Path("a.jpg"), 0.9, 0.5, 0.5, 0.0, torch.tensor([[3.0, 4.0]])),
+        ScoredImage(Path("b.jpg"), 0.8, 0.5, 0.5, 0.0, torch.tensor([6.0, 8.0])),
+        ScoredImage(Path("c.jpg"), 0.7, 0.5, 0.5, 0.0, torch.tensor([[-4.0, 3.0]])),
+    ]
+    selected, suppressed = filter_near_duplicates(
+        images, threshold=1.0, return_suppressed=True
+    )
+    assert [s.path for s in selected] == [Path("a.jpg"), Path("c.jpg")]
+    assert suppressed == {Path("b.jpg")}
+
+
+def test_large_target_scales_linearly_per_candidate():
+    """Selecting thousands of distinct photos must not re-stack prior selections."""
+    import time
+
+    embs = torch.randn(5000, 512, generator=torch.Generator().manual_seed(0))
+    images = [
+        ScoredImage(Path(f"{i}.jpg"), 1.0 - i / 5000, 0.5, 0.5, 0.0, embs[i])
+        for i in range(5000)
+    ]
+    start = time.perf_counter()
+    selected = filter_near_duplicates(images, threshold=0.9, target_count=5000)
+    elapsed = time.perf_counter() - start
+    assert len(selected) == 5000
+    # The previous implementation took ~3.7s here; keep generous CI headroom.
+    assert elapsed < 2.0
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        torch.zeros(4),
+        torch.full((4,), 1e-14),
+        # Normalizes to length ~0.9995: not unit, yet far from zero.
+        torch.tensor([9.995e-13, 0.0, 0.0, 0.0]),
+        torch.tensor([9.99e-13, 0.0, 0.0, 0.0]),
+        torch.tensor([9.9995e-13, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_identical_degenerate_embeddings_are_exact_duplicates(vector):
+    """Zero or sub-epsilon vectors never reach unit cosine, but identical ones match."""
+    images = [
+        ScoredImage(Path("a.jpg"), 0.9, 0.5, 0.5, 0.0, vector.clone()),
+        ScoredImage(Path("b.jpg"), 0.8, 0.5, 0.5, 0.0, vector.clone()),
+        ScoredImage(Path("c.jpg"), 0.7, 0.5, 0.5, 0.0, torch.tensor([1.0, 0, 0, 0])),
+    ]
+    selected, suppressed = filter_near_duplicates(
+        images, threshold=1.0, return_suppressed=True
+    )
+    assert [s.path for s in selected] == [Path("a.jpg"), Path("c.jpg")]
+    assert suppressed == {Path("b.jpg")}
+
+
+def test_distinct_degenerate_embeddings_are_kept():
+    images = [
+        ScoredImage(Path("a.jpg"), 0.9, 0.5, 0.5, 0.0, torch.tensor([1e-14, 0.0])),
+        ScoredImage(Path("b.jpg"), 0.8, 0.5, 0.5, 0.0, torch.tensor([0.0, 1e-14])),
+    ]
+    assert len(filter_near_duplicates(images, threshold=1.0)) == 2

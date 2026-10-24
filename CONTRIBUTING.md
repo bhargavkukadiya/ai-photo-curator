@@ -117,6 +117,9 @@ uv run --frozen --extra dev python -m compileall -q src tests scripts album_sele
 # Check the legacy test entrypoint
 uv run --frozen --extra dev pytest test_album_selector.py -v
 
+# Confirm uv.lock matches pyproject.toml (CI enforces this)
+uv lock --check
+
 # Build the distribution
 uv build --wheel
 
@@ -136,7 +139,7 @@ The [CI workflow](.github/workflows/ci.yml) currently runs:
 
 | Job | Platforms / Python | Checks |
 | --- | --- | --- |
-| Core | Ubuntu: 3.11, 3.12, 3.13; macOS and Windows: 3.12 | Frozen core/dev installation, full suite, wheel build, imports outside the checkout, and both console entrypoints |
+| Core | Ubuntu: 3.11, 3.12, 3.13; macOS and Windows: 3.12 | Lockfile freshness (`uv lock --check`), frozen core/dev installation, full suite, wheel build, imports outside the checkout, and both console entrypoints |
 | Optional backends | Ubuntu: 3.12 | Frozen dev/emotion/HEIC installation and full suite including the real backend smoke checks |
 | Security | Ubuntu: 3.12 | Advisory audit of every distinct registry package/version in `uv.lock`, including alternate versions and extras |
 

@@ -26,6 +26,7 @@ from photo_curator.models import (
     get_deepface,
 )
 
+# Injection point for a preloaded backend (used by tests); None means lazy load.
 DeepFace = None
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,18 @@ def technical_score(image: np.ndarray) -> float:
     Exposure is normalized to [0, 1] using distance from midpoint (0.5),
     where 0.5 is 1.0 (ideal exposure) and 0.0 or 1.0 is 0.0 (pure black or blown-out white).
     The two sub-scores are averaged.
+
+    Expects an 8-bit array: 2D grayscale, or 3D with 1 (gray), 2 (gray+alpha),
+    3 (BGR), 4 (BGRA), or more channels (first three read as BGR). Other dtypes
+    raise ValueError because the fixed sharpness and brightness scales assume
+    0-255 samples; convert them first, as load_image does.
     """
     if image.size == 0:
         raise ValueError("Image array must not be empty.")
+    if image.dtype != np.uint8:
+        raise ValueError(
+            f"Image array must have dtype uint8 (0-255 samples), got {image.dtype}."
+        )
     h, w = image.shape[:2]
     if max(h, w) > MAX_ANALYSIS_DIMENSION:
         scale = MAX_ANALYSIS_DIMENSION / max(h, w)
@@ -69,6 +79,8 @@ def technical_score(image: np.ndarray) -> float:
         channels = resized.shape[2]
         if channels == 1:
             gray = resized.squeeze(axis=2)
+        elif channels == 2:
+            gray = np.ascontiguousarray(resized[:, :, 0])  # Gray plus alpha
         elif channels == 3:
             gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         elif channels == 4:
@@ -155,16 +167,9 @@ def emotion_score(
     Filters out fallback results where no face was detected (face_confidence <= 0).
     Returns 0.0 if DeepFace is unavailable, disabled, or no faces are detected.
     """
-    import sys
-
-    album_mod = sys.modules.get("album_selector")
-    is_available = getattr(album_mod, "DEEPFACE_AVAILABLE", None)
-    if is_available is None:
-        is_available = DEEPFACE_AVAILABLE
-
-    if not deepface_enabled or not is_available:
+    if not deepface_enabled or not DEEPFACE_AVAILABLE:
         return 0.0
-    deepface_cls = getattr(album_mod, "DeepFace", None) or DeepFace or get_deepface()
+    deepface_cls = DeepFace or get_deepface()
     if deepface_cls is None:
         return 0.0
 
@@ -230,7 +235,9 @@ def calculate_total_score(
     if scale == 0:
         return 0.0
     normalized = [w / scale for w in weights]
-    return math.fsum(w * s for w, s in zip(normalized, scores)) / math.fsum(normalized)
+    return math.fsum(
+        w * s for w, s in zip(normalized, scores, strict=True)
+    ) / math.fsum(normalized)
 
 
 def load_clip_model(device: str = "cpu") -> SentenceTransformer:

@@ -16,7 +16,7 @@ from PIL import Image
 
 from photo_curator.cli import main
 from photo_curator.models import ScoredImage, get_deepface
-from photo_curator.scoring import calculate_total_score, load_image
+from photo_curator.scoring import calculate_total_score, load_image, technical_score
 from photo_curator.selection import filter_near_duplicates
 from photo_curator.storage import copy_top_images, export_scores_csv, file_identity
 from tests.conftest import save_test_image
@@ -399,3 +399,187 @@ def test_rollback_does_not_clobber_concurrent_photo(tmp_path):
     assert (out / "1_old.jpg").read_text() == "concurrent user photo"
     (backup,) = out.glob(".curator_backup_*")
     assert (backup / "1_old.jpg").read_bytes() == old.read_bytes()
+
+
+def test_importing_package_leaves_logging_unconfigured():
+    """Library imports must not install root handlers or change the root level."""
+    code = (
+        "import logging, photo_curator; root = logging.getLogger(); "
+        "assert not root.handlers, root.handlers; "
+        "assert root.level == logging.WARNING, root.level"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _run_mocked_cli(argv):
+    with (
+        mock.patch("sys.argv", ["photo-curator", *argv]),
+        mock.patch("photo_curator.cli.load_clip_model"),
+        mock.patch("photo_curator.cli.encode_reference_text"),
+        mock.patch(
+            "photo_curator.cli.aesthetic_score_batch",
+            side_effect=lambda imgs, *a, **k: (
+                [0.5] * len(imgs),
+                [torch.tensor([float(i + 1), 1.0]) for i in range(len(imgs))],
+            ),
+        ),
+    ):
+        main()
+
+
+def test_zero_emotion_weight_skips_deepface(tmp_path):
+    """A zero emotion weight cannot change ranking, so the backend is never loaded."""
+    save_test_image(tmp_path / "in" / "photo.jpg")
+    backend = mock.MagicMock()
+    with (
+        mock.patch("photo_curator.cli.DEEPFACE_AVAILABLE", True),
+        mock.patch("photo_curator.cli.get_deepface", return_value=backend) as loader,
+        mock.patch("photo_curator.scoring.DEEPFACE_AVAILABLE", True),
+        mock.patch("photo_curator.scoring.DeepFace", backend),
+    ):
+        _run_mocked_cli(
+            [
+                "--input", str(tmp_path / "in"),
+                "--output", str(tmp_path / "out"),
+                "--weight_emotion", "0",
+                "--dryrun",
+            ]
+        )
+    loader.assert_not_called()
+    backend.analyze.assert_not_called()
+
+
+def test_previous_album_inside_input_is_not_rescanned(tmp_path):
+    """Copies in an earlier curated album must not compete with their originals."""
+    input_dir = tmp_path / "photos"
+    save_test_image(input_dir / "a.jpg")
+    save_test_image(input_dir / "trip" / "b.jpg")
+    old_album = input_dir / "album_2025"
+    save_test_image(old_album / "1_a.jpg")
+    (old_album / ".curator_manifest.json").write_text('{"version": 1, "files": ["1_a.jpg"]}')
+    legacy_album = input_dir / "old" / "legacy"
+    save_test_image(legacy_album / "nested" / "1_b.jpg")
+    (legacy_album / ".curator_manifest.txt").write_text("nested\n")
+    preview = tmp_path / "scores.csv"
+
+    _run_mocked_cli(
+        [
+            "--input", str(input_dir),
+            "--output", str(tmp_path / "album_2026"),
+            "--preview_csv", str(preview),
+            "--no_deepface",
+            "--dryrun",
+        ]
+    )
+
+    paths = sorted(
+        Path(line.split(",")[0]).relative_to(input_dir).as_posix()
+        for line in preview.read_text(encoding="utf-8").splitlines()[1:]
+    )
+    assert paths == ["a.jpg", "trip/b.jpg"]
+
+
+def test_input_that_is_itself_an_album_is_still_scanned(tmp_path):
+    """Only albums nested below the input are skipped, not the input itself."""
+    album = tmp_path / "album"
+    save_test_image(album / "1_a.jpg")
+    (album / ".curator_manifest.json").write_text('{"version": 1, "files": ["1_a.jpg"]}')
+    preview = tmp_path / "scores.csv"
+    _run_mocked_cli(
+        [
+            "--input", str(album),
+            "--output", str(tmp_path / "next"),
+            "--preview_csv", str(preview),
+            "--no_deepface",
+            "--dryrun",
+        ]
+    )
+    assert "1_a.jpg" in preview.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("dtype", [np.uint16, np.float32, np.float64, np.int32])
+def test_technical_score_rejects_non_uint8_arrays(dtype):
+    """Fixed 0-255 scales would silently misscore other sample types."""
+    with pytest.raises(ValueError, match="dtype uint8"):
+        technical_score(np.full((10, 10, 3), 1, dtype=dtype))
+
+
+def test_technical_score_gray_alpha_uses_gray_channel():
+    gray_alpha = np.zeros((20, 20, 2), dtype=np.uint8)
+    gray_alpha[..., 0] = 128
+    gray_alpha[..., 1] = 255  # Opaque alpha must not affect brightness
+    gray = np.full((20, 20), 128, dtype=np.uint8)
+    assert technical_score(gray_alpha) == pytest.approx(technical_score(gray))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_new_preview_csv_uses_umask_default_mode(tmp_path):
+    old = os.umask(0o027)
+    try:
+        # Reading the umask means setting it, which would briefly loosen the
+        # permissions of files other threads create; the export must not touch it.
+        with mock.patch("os.umask", side_effect=AssertionError("umask changed")):
+            export_scores_csv([scored(tmp_path / "a.jpg")], tmp_path / "scores.csv")
+    finally:
+        os.umask(old)
+    assert (tmp_path / "scores.csv").stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("existing", [0o600, 0o640])
+def test_replacement_report_is_private_while_written(tmp_path, existing):
+    """A broader umask must not expose a private report before its mode is restored."""
+    csv_path = tmp_path / "scores.csv"
+    csv_path.write_text("old\n")
+    csv_path.chmod(existing)
+    real_fsync = os.fsync
+    staged_modes = []
+
+    def record_mode(fd):
+        real_fsync(fd)
+        staged_modes.append(os.fstat(fd).st_mode & 0o777)
+
+    old = os.umask(0o022)
+    try:
+        with mock.patch("photo_curator.storage.os.fsync", side_effect=record_mode):
+            export_scores_csv([scored(tmp_path / "a.jpg")], csv_path, overwrite=True)
+    finally:
+        os.umask(old)
+    assert staged_modes == [0o600]
+    assert csv_path.stat().st_mode & 0o777 == existing
+
+
+def test_preview_csv_has_single_crlf_line_endings(tmp_path):
+    """The staged report is binary at the OS level, so Windows adds no extra CR."""
+    csv_path = tmp_path / "scores.csv"
+    export_scores_csv([scored(tmp_path / "a.jpg")], csv_path)
+    data = csv_path.read_bytes()
+    assert data.count(b"\r\n") == 2
+    assert b"\r\r\n" not in data
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_replaced_preview_csv_keeps_existing_mode(tmp_path):
+    csv_path = tmp_path / "scores.csv"
+    csv_path.write_text("old\n")
+    csv_path.chmod(0o604)
+    export_scores_csv([scored(tmp_path / "a.jpg")], csv_path, overwrite=True)
+    assert csv_path.stat().st_mode & 0o777 == 0o604
+    assert "TotalScore" in csv_path.read_text(encoding="utf-8")
+
+
+def test_requirements_txt_matches_pyproject_dependencies():
+    """requirements.txt duplicates the core dependency floors; keep them aligned."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = [
+        line.strip()
+        for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert requirements == declared["project"]["dependencies"]

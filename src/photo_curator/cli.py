@@ -36,15 +36,24 @@ from photo_curator.scoring import (
 from photo_curator.selection import filter_near_duplicates
 from photo_curator.storage import copy_top_images, export_scores_csv, file_identity
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 logger = logging.getLogger(__name__)
+
+
+def _is_curator_album(directory: Path) -> bool:
+    """Whether *directory* holds a curator manifest from a previous run."""
+    return any(
+        (directory / name).is_file()
+        for name in (MANIFEST_FILENAME, LEGACY_MANIFEST_FILENAME)
+    )
 
 
 def main() -> None:
     """Parse arguments, score images, and copy the best ones."""
+    # Configure logging only for CLI runs so importing the package has no side effects.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="AI-based photo selector for albums.",
     )
@@ -140,7 +149,10 @@ def main() -> None:
         if not math.isfinite(val) or val < 0:
             parser.error(f"{name} must be a finite non-negative number, got {val}")
 
-    use_deepface = (not args.no_deepface) and DEEPFACE_AVAILABLE
+    # A zero emotion weight cannot affect ranking, so skip the costly backend.
+    use_deepface = (
+        (not args.no_deepface) and DEEPFACE_AVAILABLE and args.weight_emotion > 0
+    )
     if use_deepface:
         use_deepface = get_deepface() is not None
 
@@ -234,6 +246,21 @@ def main() -> None:
             parser.error(str(e))
 
     # --- Collect images (excluding output directory if inside input) ---------
+    # Albums from earlier runs nested in the input hold copies of source photos;
+    # rescanning them would let those copies compete with their originals.
+    album_cache: dict[Path, bool] = {}
+    skipped_albums: set[Path] = set()
+
+    def nested_album(path: Path) -> Path | None:
+        for parent in path.parents:
+            if parent == input_path:
+                return None
+            if parent not in album_cache:
+                album_cache[parent] = _is_curator_album(parent)
+            if album_cache[parent]:
+                return parent
+        return None
+
     images: list[Path] = []
     for p in sorted(input_path.rglob("*")):
         if not p.is_file() or not is_image_file(p):
@@ -244,7 +271,14 @@ def main() -> None:
                     continue
             except ValueError:
                 pass
+        album = nested_album(p)
+        if album is not None:
+            skipped_albums.add(album)
+            continue
         images.append(p)
+
+    for album in sorted(skipped_albums):
+        logger.info("Skipping previously curated album inside input: %s", album)
 
     if not images:
         logger.error("No supported images found in %s", input_path)
@@ -300,12 +334,12 @@ def main() -> None:
             sys.exit(1)
 
         # Technical and emotion scoring per valid image in the batch
-        for p, pil_img, cv_img, aes, emb in zip(
+        for p, cv_img, aes, emb in zip(
             valid_paths,
-            batch_pil,
             batch_cv,
             batch_aes_scores,
             batch_embs,
+            strict=True,
         ):
             try:
                 tech = technical_score(cv_img)
