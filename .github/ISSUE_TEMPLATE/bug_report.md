@@ -35,6 +35,7 @@ Paste terminal logs and Python traceback here
 - **AI Photo Curator Version / Commit:** (e.g. `v1.0.0` or commit hash)
 - **PyTorch Device:** (`cpu`, `cuda`, or `mps`)
 - **Optional Dependencies:** (DeepFace installed? pillow-heif installed?)
+- **OpenCV Packages:** (output of `pip list` lines starting with `opencv`; more than one can break `import cv2`)
 
 ## Additional Context
 

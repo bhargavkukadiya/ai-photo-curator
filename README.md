@@ -177,6 +177,8 @@ pip install -e ".[all,dev]"
 
 DeepFace initializes only when emotion scoring is enabled. Expected backend initialization failures disable emotion scoring and rebalance the remaining weights. Real facial analysis may download additional DeepFace model weights on first use.
 
+DeepFace 0.0.102+ runs on TensorFlow, PyTorch, or ONNX Runtime and, unless told otherwise, picks the first one installed in that order. The `emotion` extra installs TensorFlow (through `keras` and `tf-keras`, a ~546 MiB wheel), so emotion scoring runs on TensorFlow. To use another installed backend, set `DEEPFACE_BACKEND_ENGINE` to `pytorch` (PyTorch is a core dependency) or `onnx` (ONNX Runtime comes with DeepFace). The test suite covers only the default backend, and an unrecognized value disables emotion scoring.
+
 ### Option 3: Reproduce the Dependency Lock
 
 ```bash
@@ -186,6 +188,42 @@ uv run --frozen ai-photo-curator --help
 ```
 
 For optional backends, add `--extra emotion --extra heic` to both `uv sync` and `uv run`. A pip installation uses the version constraints in `pyproject.toml`; the frozen uv commands use the exact versions in `uv.lock`.
+
+<a id="upgrading-an-existing-environment"></a>
+
+### Upgrading an Existing Environment
+
+Photo Curator now depends on a single OpenCV package, `opencv-contrib-python-headless`, the build that DeepFace 0.0.102+ and retina-face 0.0.19+ also require. Earlier versions depended on `opencv-python`. Both packages install the same `cv2` files, so while both are present, removing either one can break `import cv2` and with it core scoring.
+
+With uv, sync with the `--extra` flags you normally use and reinstall the headless package in the same step:
+
+```bash
+uv sync --frozen --reinstall-package opencv-contrib-python-headless   # e.g. add: --extra dev --extra emotion
+```
+
+A plain `uv sync` removes `opencv-python`, but if both OpenCV packages were already installed it keeps the existing headless package (its version already matches the lock) without restoring the `cv2` files the removal deleted. The reinstall restores them and is harmless otherwise; it is also the repair if a plain sync already left `import cv2` broken. Alternatively, delete `.venv` and run `uv sync --frozen` again with your extras.
+
+pip never removes packages that are no longer required, so migrate a pip environment in this order:
+
+```bash
+# 1. Reinstall with the extras you use. If DeepFace is installed, include the
+#    emotion (or all) extra: this upgrades DeepFace to 0.0.102+ and retina-face
+#    to 0.0.19+, which no longer depend on opencv-python.
+pip install -e ".[emotion]"    # or: pip install -e .   /   pip install -e ".[all,dev]"
+
+# 2. Remove the old OpenCV package.
+pip uninstall -y opencv-python
+
+# 3. Restore the shared cv2 files without reinstalling or upgrading anything else.
+pip install --force-reinstall --no-deps opencv-contrib-python-headless
+
+# 4. Confirm that nothing is missing and cv2 imports. `pip list` should show
+#    opencv-contrib-python-headless and no other opencv-* package.
+pip check
+python -c "import cv2; print(cv2.__version__)"
+```
+
+Upgrade DeepFace before removing `opencv-python`. DeepFace 0.0.101 and earlier still require `opencv-python`, so leaving them in place makes `pip check` fail, and the next install puts `opencv-python` back.
 
 ---
 

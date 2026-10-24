@@ -50,6 +50,9 @@ uv sync --frozen --extra dev
 uv run --frozen --extra dev ai-photo-curator --help
 ```
 
+> [!NOTE]
+> Development environments created before the switch to `opencv-contrib-python-headless` still contain `opencv-python`, which owns the same `cv2` files. With uv, run `uv sync --frozen --extra dev --reinstall-package opencv-contrib-python-headless` (plus any other extras you use): a plain `uv sync` removes `opencv-python` but can leave an already-installed headless package without its `cv2` files. Deleting `.venv` and syncing again also works. For a pip environment, follow [Upgrading an Existing Environment](README.md#upgrading-an-existing-environment), which upgrades DeepFace before removing the old package.
+
 Alternatively, install from the package constraints with pip in an activated virtual environment:
 
 ```bash
