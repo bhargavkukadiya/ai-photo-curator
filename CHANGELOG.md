@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `emotion_score` no longer reads overrides from the `album_selector` shim module; patch `photo_curator.scoring.DeepFace` instead.
 - Dependabot now updates `uv.lock` (uv ecosystem), and CI fails when the lockfile is out of date with `pyproject.toml`.
 - Raise the Pillow floor to 13.0.0 and filelock to 4.2.1, and lock certifi 2026.10.23 and setuptools 84.2.1 (build floor 84.1.0), resolving newly published advisories against the previously locked versions, including PYSEC-2026-4320 in certifi.
-- Exclude deepface 0.0.103 from the emotion extra: it imports `werkzeug` from its core modules but declares it only in its `api` extra, so DeepFace fails to initialize.
+- Depend on `opencv-contrib-python-headless` instead of `opencv-python`. DeepFace 0.0.102+ and retina-face require that build, and two OpenCV distributions own the same `cv2` files, so removing either one (for example, by uninstalling the emotion extra) broke core scoring. The emotion and all extras now require deepface 0.0.102 or later, because 0.0.100 and 0.0.101 (with retina-face 0.0.18) still require `opencv-python`. pip does not remove the old `opencv-python` from existing environments, so migrate with: reinstall the project with its extras to upgrade deepface and retina-face (for example, `pip install -e ".[emotion]"`), then `pip uninstall -y opencv-python`, then `pip install --force-reinstall --no-deps opencv-contrib-python-headless` to restore the shared `cv2` files without reinstalling or upgrading other dependencies.
+- Exclude deepface 0.0.103 from the emotion and all extras: it imports `werkzeug` from its core modules but declares it only in its `api` extra, so DeepFace fails to initialize.
 
 ### Fixed
 
