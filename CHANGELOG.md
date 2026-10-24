@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-24
+
+### Breaking Changes
+
+- Python 3.11 or later is required; Python 3.9 and 3.10 are no longer supported.
+- OpenCV now uses `opencv-contrib-python-headless`. Existing environments need the [OpenCV migration steps](README.md#upgrading-an-existing-environment), including upgrading DeepFace before removing the old OpenCV package.
+- `technical_score()` accepts only `uint8` arrays. Use `load_image()` for supported image conversion; floating-point HDR and signed or 32-bit integer grayscale inputs require explicit conversion.
+- The Python `export_scores_csv()` API requires `overwrite=True` to replace an existing report and rejects symlinks and paths that alias input photos.
+- Legacy overrides through `album_selector.DeepFace` and `album_selector.DEEPFACE_AVAILABLE` no longer affect `emotion_score()`. Inject a backend through `photo_curator.scoring.DeepFace`; availability overrides must target `photo_curator.scoring.DEEPFACE_AVAILABLE`.
+- Earlier curated albums nested inside the input are skipped during discovery. An input directory that is itself an album is still scanned.
+- `load_image()` limits decoding to the [supported formats](README.md#supported-formats). Files with supported extensions but unsupported content, such as GIF data in a `.jpg` file, are skipped.
+
 ### Changed
 
 - Require Python 3.11+ to remove vulnerable legacy dependency branches; refresh the lockfile and enforce security floors for core and optional backends.
@@ -16,8 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `pyproject.toml` as the single source of package metadata, retaining `setup.py` as a compatibility shim.
 - Keep selected deduplication embeddings unit-normalized in one preallocated matrix; selecting 5,000 distinct photos drops from ~3.7s to ~0.2s.
 - Skip DeepFace entirely when `--weight_emotion` is 0, since it cannot affect ranking.
-- Skip earlier curated albums (directories with a curator manifest) nested inside the input during discovery.
-- `emotion_score` no longer reads overrides from the `album_selector` shim module; patch `photo_curator.scoring.DeepFace` instead.
 - Dependabot now updates `uv.lock` (uv ecosystem), and CI fails when the lockfile is out of date with `pyproject.toml`.
 - Raise the Pillow floor to 13.0.0 and filelock to 4.2.1, and lock certifi 2026.10.23 and setuptools 84.2.1 (build floor 84.1.0), resolving newly published advisories against the previously locked versions, including PYSEC-2026-4320 in certifi.
 - Depend on `opencv-contrib-python-headless` instead of `opencv-python`, and require deepface 0.0.102+ in the emotion and all extras, so a single OpenCV distribution owns the `cv2` files; with both installed, removing either one broke core scoring. Existing pip and uv environments need a one-time migration: see [Upgrading an Existing Environment](README.md#upgrading-an-existing-environment).
@@ -25,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Include test fixtures, validation scripts, the dependency lockfile, sample photos and scores, supporting documentation, and the linked GitHub workflows and templates in the source archive so tests and documented examples work outside the checkout.
 - Record backup and publication intent before filesystem mutations so interrupts after successful operations can be reconciled safely.
 - Publish manifests and restore backups without clobbering concurrent files; retain recovery files if rollback is incomplete or ownership is uncertain.
 - Independently reject non-regular JSON and legacy manifest paths.
@@ -84,5 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive In-Memory Test Suite**:
   - 95 unit and integration tests executing with mocked neural models in under 8 seconds.
 
-[Unreleased]: https://github.com/bhargavkukadiya/ai-photo-curator/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/bhargavkukadiya/ai-photo-curator/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/bhargavkukadiya/ai-photo-curator/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/bhargavkukadiya/ai-photo-curator/releases/tag/v1.0.0

@@ -6,14 +6,16 @@ Security updates and critical patches are actively provided for the following ve
 
 | Version | Supported | Notes |
 | :--- | :---: | :--- |
-| **1.0.x** | :white_check_mark: | Current stable release |
-| **< 1.0.0** | :x: | Unsupported legacy development versions |
+| **2.0.x** | :white_check_mark: | Current release line; requires Python 3.11+ |
+| **< 2.0.0** | :x: | Upgrade to 2.0.0; security fixes are not backported |
+
+For upgrades from 1.0.x, follow [Upgrading an Existing Environment](README.md#upgrading-an-existing-environment) before running Photo Curator.
 
 ---
 
 ## Security Architecture & Design Principles
 
-Photo Curator handles user filesystem assets and executes deep learning inference. The following describes the current source tree, including the fixes listed under `Unreleased` in [CHANGELOG.md](CHANGELOG.md). Those fixes must not be assumed to exist in older release artifacts.
+Photo Curator handles user filesystem assets and executes deep learning inference. The following describes version 2.0.0 and the current source tree, including the fixes listed in the [2.0.0 release notes](CHANGELOG.md#200---2026-10-24). Those fixes must not be assumed to exist in older release artifacts.
 
 1. **Transactional Two-Phase Commit (`copy_top_images`)**:
    - New images and manifest entries are prepared in a private staging directory (`.curator_stage_*`). Publication uses no-clobber hard links where available; the fallback creates final files exclusively and streams their data. Readers can see individual files before the manifest commit; the album is not an atomic snapshot.

@@ -32,7 +32,7 @@ Paste terminal logs and Python traceback here
 
 - **OS:** (e.g. macOS Sonoma 14.5, Ubuntu 22.04, Windows 11)
 - **Python Version:** (e.g. `python --version` -> `3.12.13`)
-- **AI Photo Curator Version / Commit:** (e.g. `v1.0.0` or commit hash)
+- **AI Photo Curator Version / Commit:** (e.g. `v2.0.0` or commit hash)
 - **PyTorch Device:** (`cpu`, `cuda`, or `mps`)
 - **Optional Dependencies:** (DeepFace installed? pillow-heif installed?)
 - **OpenCV Packages:** (output of `pip list` lines starting with `opencv`; more than one can break `import cv2`)

@@ -120,16 +120,16 @@ flowchart TD
 
 ## ⚡ Performance & Benchmarks
 
-The following measurements were recorded for the original v1.0.0 release; they are historical examples, not benchmarks rerun against the current dependency lock. Runtime and peak memory depend on hardware, image format, aspect ratio, and installed backends.
+The first five measurements were recorded for the original v1.0.0 release; they are historical examples, not benchmarks rerun against the current dependency lock. The final row measures the v2.0.0 deduplication implementation. Runtime and peak memory depend on hardware, image format, aspect ratio, and installed backends.
 
-| Operation / Metric | Previous Baseline | Optimized (v1.0.0) | Notes |
+| Operation / Metric | Previous Baseline | Optimized | Notes |
 |---|---|---|---|
 | **Burst Deduplication (5,000 photos)** | `4.245s` (Scalar loop) | **`0.114s`** (Vectorized) | **37× faster** batch matrix similarity |
 | **Retained Buffers per 48MP Photo (8000×6000)** | ~288 MB retained (Dual PIL RGB + OpenCV BGR) | **~4.72 MB** retained (Dual 1024px buffers) | **>98% retained buffer reduction** |
 | **Retained Batch Memory (32 Photos in RAM)** | ~9.2 GB uncompressed | **~151 MB** downscaled | Prevents cumulative batch accumulation |
 | **Transient Decode Peak (Single 48MP JPEG)** | ~569 MiB peak RSS | ~569 MiB peak RSS | Full-resolution initial decode & EXIF transpose |
 | **Original Release Test Suite (95 tests)** | N/A | **~2.4s** | Fast isolated mock & unit tests |
-| **Distinct-Photo Deduplication (5,000 selected, 512-d)** | `3.7s` (re-stacked selections) | **`~0.2s`** (preallocated unit matrix) | Unreleased; 0.15–0.20s over repeated Apple Silicon CPU runs, `--target 5000` |
+| **Distinct-Photo Deduplication (5,000 selected, 512-d)** | `3.7s` (re-stacked selections) | **`~0.2s`** (preallocated unit matrix) | v2.0.0; 0.15–0.20s over repeated Apple Silicon CPU runs, `--target 5000` |
 
 > [!NOTE]
 > The ~4.72 MB buffer example is for an 8000×6000 image resized to 1024×768. A square image can retain two 1024×1024 RGB/BGR buffers (~6.29 MB combined, or ~201 MB for 32 photos). These figures cover pixel buffers only. Full-resolution decoding, EXIF transposition, high-bit-depth conversion, model weights, and inference need additional memory. Pillow refuses to decode images above ~179 megapixels (twice its default `MAX_IMAGE_PIXELS` of ~89.5 MP); images between ~89.5 MP and ~179 MP only trigger a warning and are decoded at full resolution before downsampling.
