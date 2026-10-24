@@ -2,11 +2,11 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
 torch>=2.14.0
-Pillow>=12.3.0
+Pillow>=13.0.0
 tqdm>=4.65.0
 sentence-transformers>=6.0.1
 transformers>=5.16.1
-filelock>=3.20.3
+filelock>=4.2.1
 requests>=2.33.0
 urllib3>=2.7.0
 

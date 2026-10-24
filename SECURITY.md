@@ -30,7 +30,7 @@ Photo Curator handles user filesystem assets and executes deep learning inferenc
    - Photo, manifest, and restore destinations use no-clobber publication (hard links or `os.O_CREAT | os.O_EXCL`). Both manifest paths are validated independently as regular files. The album directory must remain under the caller’s control; the lock coordinates curator writers, not arbitrary external directory manipulation.
 
 5. **Memory Management & Safe Image Decoding**:
-   - Pillow's decompression-bomb limit rejects extremely large images; those errors are logged and the affected image is skipped. Only JPEG, PNG, WebP, BMP, TIFF, and optionally HEIF decoders are enabled, regardless of the file’s extension.
+   - Pillow's decompression-bomb limit rejects images above ~179 megapixels (twice its default `MAX_IMAGE_PIXELS` of ~89.5 MP); those errors are logged and the affected image is skipped. Images between ~89.5 MP and ~179 MP only raise a warning and are decoded at full resolution, so they can use substantial transient memory. Only JPEG, PNG, WebP, BMP, TIFF, and optionally HEIF decoders are enabled, regardless of the file’s extension.
    - Dimension-capped thumbnailing reduces retained raster buffers to at most 1024px on the longest edge. Initial file decompression and EXIF transposition still temporarily require memory proportional to the source image dimensions.
    - Unsigned 16-bit grayscale is normalized before scoring. TIFF bit depth and sample format are checked; signed/32-bit integer and floating-point grayscale require explicit conversion and are skipped. Album copies retain the original source bytes and metadata, including any EXIF location information.
 

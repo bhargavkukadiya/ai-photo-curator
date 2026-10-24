@@ -13,3 +13,7 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Imports werkzeug from its core modules but declares it only in the api extra.
+      - dependency-name: "deepface"
+        versions: ["0.0.103"]

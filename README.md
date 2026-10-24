@@ -36,7 +36,7 @@
 
 - 🎯 **Multi-Signal AI Quality Engine**:
   - **Technical Quality (40%)**: Standardized Laplacian variance for edge sharpness plus normalized luminance exposure.
-  - **Aesthetic Quality (40%)**: Batched OpenAI CLIP (`ViT-B/32`) cosine similarity scored against configurable semantic reference prompts.
+  - **Aesthetic Quality (40%)**: Batched OpenAI CLIP (`ViT-B/32`) cosine similarity scored against a configurable semantic reference prompt (`--ref_text`).
   - **Facial Emotion Detection (20%, optional)**: DeepFace facial analysis to prioritize genuine smiles and joy in group and portrait photos.
 - ⚡ **Vectorized Burst-Shot Deduplication**: Selected embeddings are kept unit-normalized in one preallocated matrix, so each candidate costs a single matrix-vector product when suppressing redundant burst shots by cosine similarity (`--dedup_threshold`).
 - 🛡️ **Two-Phase Transactional Commit**:
@@ -59,7 +59,7 @@ The default weights are 40% technical, 40% aesthetic, and 20% emotion when the e
 ```mermaid
 flowchart TD
     %% Ingestion Stage
-    RAW["📸 Raw Photo Collection<br/>JPG, PNG, WebP, HEIC"] --> DISCOVERY["Recursive Discovery<br/>Exclude the Output Album"]
+    RAW["📸 Raw Photo Collection<br/>JPG, PNG, WebP, HEIC"] --> DISCOVERY["Recursive Discovery<br/>Exclude Output & Earlier Nested Albums"]
     DISCOVERY --> RESIZE["Decode & Orient<br/>Then Downscale to 1024px Max Edge"]
 
     %% Scoring Stage
@@ -129,10 +129,10 @@ The following measurements were recorded for the original v1.0.0 release; they a
 | **Retained Batch Memory (32 Photos in RAM)** | ~9.2 GB uncompressed | **~151 MB** downscaled | Prevents cumulative batch accumulation |
 | **Transient Decode Peak (Single 48MP JPEG)** | ~569 MiB peak RSS | ~569 MiB peak RSS | Full-resolution initial decode & EXIF transpose |
 | **Original Release Test Suite (95 tests)** | N/A | **~2.4s** | Fast isolated mock & unit tests |
-| **Distinct-Photo Deduplication (5,000 selected, 512-d)** | `3.7s` (re-stacked selections) | **`0.15s`** (preallocated unit matrix) | Unreleased; one Apple Silicon CPU run, `--target 5000` |
+| **Distinct-Photo Deduplication (5,000 selected, 512-d)** | `3.7s` (re-stacked selections) | **`~0.2s`** (preallocated unit matrix) | Unreleased; 0.15–0.20s over repeated Apple Silicon CPU runs, `--target 5000` |
 
 > [!NOTE]
-> The ~4.72 MB buffer example is for an 8000×6000 image resized to 1024×768. A square image can retain two 1024×1024 RGB/BGR buffers (~6.29 MB combined, or ~201 MB for 32 photos). These figures cover pixel buffers only. Full-resolution decoding, EXIF transposition, high-bit-depth conversion, model weights, and inference need additional memory.
+> The ~4.72 MB buffer example is for an 8000×6000 image resized to 1024×768. A square image can retain two 1024×1024 RGB/BGR buffers (~6.29 MB combined, or ~201 MB for 32 photos). These figures cover pixel buffers only. Full-resolution decoding, EXIF transposition, high-bit-depth conversion, model weights, and inference need additional memory. Pillow refuses to decode images above ~179 megapixels (twice its default `MAX_IMAGE_PIXELS` of ~89.5 MP); images between ~89.5 MP and ~179 MP only trigger a warning and are decoded at full resolution before downsampling.
 
 ---
 
@@ -173,7 +173,7 @@ pip install -e ".[all,dev]"
 ```
 
 > [!NOTE]
-> On the first run, the CLIP model (`clip-ViT-B-32`, ~350 MB) downloads automatically into the Hugging Face cache (normally `~/.cache/huggingface/`).
+> On the first run, the CLIP model (`clip-ViT-B-32`, ~605 MB of weights) downloads automatically into the Hugging Face cache (normally `~/.cache/huggingface/`).
 
 DeepFace initializes only when emotion scoring is enabled. Expected backend initialization failures disable emotion scoring and rebalance the remaining weights. Real facial analysis may download additional DeepFace model weights on first use.
 
@@ -251,7 +251,7 @@ ai-photo-curator \
 ```
 
 > [!TIP]
-> When `--no_deepface` is passed or emotion scoring is unavailable, weights automatically rebalance dynamically so the composite score always spans the full `[0.0, 1.0]` scale.
+> When `--no_deepface` is passed or emotion scoring is unavailable, the remaining weights are renormalized to sum to 1, so the composite score stays within `[0.0, 1.0]` without a disabled signal dragging it down.
 
 ### Hardware Acceleration
 
@@ -330,16 +330,16 @@ When `--preview_csv <filename>.csv` is passed, Photo Curator writes a structured
 
 ## 🖼️ Supported Formats
 
-| Format | Extension | Decoder Engine | Notes |
+| Format | Extension | Decoder | Notes |
 |---|---|:---:|---|
-| **JPEG** | `.jpg`, `.jpeg` | Pillow / OpenCV | Automatic EXIF orientation transpose |
-| **PNG** | `.png` | Pillow / OpenCV | RGB/RGBA and normalized unsigned 16-bit grayscale |
-| **WebP** | `.webp` | Pillow / OpenCV | Lossy and lossless WebP support |
-| **BMP** | `.bmp` | Pillow / OpenCV | Standard uncompressed bitmaps |
-| **TIFF** | `.tiff`, `.tif` | Pillow / OpenCV | RGB and 8-bit grayscale; unsigned 16-bit grayscale is normalized. Signed/32-bit integer and floating-point grayscale are skipped. |
-| **HEIC / HEIF** | `.heic`, `.heif` | `pillow-heif` | Requires `pip install -e ".[heic]"` |
+| **JPEG** | `.jpg`, `.jpeg` | Pillow | Automatic EXIF orientation transpose |
+| **PNG** | `.png` | Pillow | RGB/RGBA (alpha discarded) and normalized unsigned 16-bit grayscale |
+| **WebP** | `.webp` | Pillow | Lossy and lossless WebP support |
+| **BMP** | `.bmp` | Pillow | Standard uncompressed bitmaps |
+| **TIFF** | `.tiff`, `.tif` | Pillow | RGB and 8-bit grayscale; unsigned 16-bit grayscale is normalized. Signed/32-bit integer and floating-point grayscale are skipped. |
+| **HEIC / HEIF** | `.heic`, `.heif` | Pillow with the `pillow-heif` plugin | Requires `pip install -e ".[heic]"` |
 
-Pillow decodes the image and applies EXIF orientation; OpenCV receives an 8-bit BGR array for scoring. Copies preserve the original source bytes. Discovery uses the listed extensions, and decoding also checks the content format. For multi-frame inputs, the first frame is used for scoring.
+Pillow decodes every format and applies EXIF orientation; OpenCV never decodes files and only receives the resulting 8-bit BGR array for scoring. Alpha channels are discarded during RGB conversion, so transparent areas are scored by their stored color values, which are often black. Copies preserve the original source bytes. Discovery uses the listed extensions, and decoding also checks the content format. For multi-frame inputs, the first frame is used for scoring.
 
 ---
 
@@ -349,7 +349,7 @@ Pillow decodes the image and applies EXIF orientation; OpenCV receives an 8-bit 
 
 Photo Curator enforces strict filesystem integrity guarantees:
 
-1. **Staged Commit**: Files are copied into an isolated temporary folder (`.curator_stage_<hash>`). Only upon successful scoring and staging are files moved to the destination folder via atomic links or `O_CREAT | O_EXCL` exclusive stream copy.
+1. **Staged Commit**: Files are copied into an isolated temporary folder (`.curator_stage_<random suffix>`). Only after every file is staged are they published to the destination folder via atomic hard links or `O_CREAT | O_EXCL` exclusive stream copy.
 2. **Rollback & Recovery**: Transaction intent is recorded before filesystem changes, including backup renames and file publication. Errors and Ctrl-C trigger rollback. If restoration would overwrite a concurrent file, ownership is uncertain, or rollback is interrupted, recovery backups are retained. SIGKILL and power loss cannot run rollback. Files become visible individually; this is not an atomic album snapshot for concurrent readers.
 3. **Path Traversal Protection**: Manifest entries are strictly checked against directory escape (`..`, `/`).
 4. **Symlink Rejection**: Manifests and tracked entries reject symlinks to prevent symlink clobbering attacks.
@@ -382,7 +382,7 @@ uv run --frozen --extra dev pytest -vv
 
 Core tests mock ML inference and require no GPU or model downloads. Optional backend smoke tests run when the corresponding extras are installed.
 
-CI tests the locked core on Ubuntu with Python 3.11–3.13 and on macOS/Windows with Python 3.12. Each core job also builds and smoke-tests the wheel and both console commands. A separate Ubuntu/Python 3.12 job installs the emotion and HEIC extras. The security job audits every distinct registry package/version in the lockfile. See [CONTRIBUTING.md](CONTRIBUTING.md) for matching local commands.
+CI tests the locked core on Ubuntu with Python 3.11–3.13 and on macOS/Windows with Python 3.12. Each core job first fails if `uv.lock` is out of date with `pyproject.toml` (`uv lock --check`), and also builds and smoke-tests the wheel and both console commands. A separate Ubuntu/Python 3.12 job installs the emotion and HEIC extras. The security job audits every distinct registry package/version in the lockfile. See [CONTRIBUTING.md](CONTRIBUTING.md) for matching local commands.
 
 ---
 

@@ -14,11 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Require Python 3.11+ to remove vulnerable legacy dependency branches; refresh the lockfile and enforce security floors for core and optional backends.
 - Initialize DeepFace lazily and include its TensorFlow compatibility backend in the emotion extra.
 - Use `pyproject.toml` as the single source of package metadata, retaining `setup.py` as a compatibility shim.
-- Keep selected deduplication embeddings unit-normalized in one preallocated matrix; selecting 5,000 distinct photos drops from ~3.7s to ~0.15s.
+- Keep selected deduplication embeddings unit-normalized in one preallocated matrix; selecting 5,000 distinct photos drops from ~3.7s to ~0.2s.
 - Skip DeepFace entirely when `--weight_emotion` is 0, since it cannot affect ranking.
 - Skip earlier curated albums (directories with a curator manifest) nested inside the input during discovery.
 - `emotion_score` no longer reads overrides from the `album_selector` shim module; patch `photo_curator.scoring.DeepFace` instead.
 - Dependabot now updates `uv.lock` (uv ecosystem), and CI fails when the lockfile is out of date with `pyproject.toml`.
+- Raise the Pillow floor to 13.0.0 and filelock to 4.2.1, and lock certifi 2026.10.23 and setuptools 84.2.1 (build floor 84.1.0), resolving newly published advisories against the previously locked versions, including PYSEC-2026-4320 in certifi.
+- Exclude deepface 0.0.103 from the emotion extra: it imports `werkzeug` from its core modules but declares it only in its `api` extra, so DeepFace fails to initialize.
 
 ### Fixed
 
@@ -37,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report missing or ambiguous wheel artifacts before attempting the wheel smoke-test installation.
 - Document canonical CSV parent paths for prevalidated exports and cover parent symlink redirection with a regression test.
 - Correct safety, memory, and DeepFace package-license documentation; clarify EXIF preservation and CSV cutoff semantics.
+- Correct the CLIP download size (~605 MB), the 1.0.0 deduplication description, and the decoder table (Pillow decodes every format; OpenCV only scores arrays); document alpha discarding, Pillow's decompression-bomb warning band, and the CI lockfile check.
 - Align diagrams, CLI/CSV references, contributor commands, and CI coverage with the current implementation; replace noreply email contacts with private reporting instructions.
 
 ### Added
@@ -55,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Facial Emotion Detection (20%, optional)**: DeepFace facial expression analysis prioritizing genuine smiles and positive emotion.
   - **Dynamic Weight Fusion**: Normalized quality scoring with automatic rebalancing when emotion detection is disabled or unavailable.
 - **Vectorized Near-Duplicate Deduplication**:
-  - Accelerated burst-shot deduplication utilizing batched PyTorch tensor matrix multiplication (`torch.matmul`); historical benchmark results are documented in the README.
+  - Accelerated burst-shot deduplication comparing each candidate against all selected embeddings with one batched `sentence_transformers.util.cos_sim` call; historical benchmark results are documented in the README.
 - **Memory-Bounded Image Ingestion**:
   - Post-decode memory downscaling (capped at 1024px max-edge) using Lanczos interpolation, reducing retained dual-buffer memory per 48MP photo by >98% (~288 MB to ~4.72 MB combined) and preventing batch memory accumulation.
 - **Robust Two-Phase Transactional Commit**:
@@ -79,3 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tracked `uv.lock` for exact dependency resolution and fast cross-platform environment synchronization.
 - **Comprehensive In-Memory Test Suite**:
   - 95 unit and integration tests executing with mocked neural models in under 8 seconds.
+
+[Unreleased]: https://github.com/bhargavkukadiya/ai-photo-curator/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/bhargavkukadiya/ai-photo-curator/releases/tag/v1.0.0

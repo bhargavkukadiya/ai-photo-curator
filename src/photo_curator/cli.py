@@ -114,7 +114,7 @@ def main() -> None:
         "--weight_emotion",
         type=float,
         default=DEFAULT_WEIGHT_EMOTION,
-        help=f"Weight for emotion score (default: {DEFAULT_WEIGHT_EMOTION})",
+        help=f"Weight for emotion score; 0 skips DeepFace entirely (default: {DEFAULT_WEIGHT_EMOTION})",
     )
     parser.add_argument(
         "--dedup_threshold",

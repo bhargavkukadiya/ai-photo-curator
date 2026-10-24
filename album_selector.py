@@ -15,7 +15,7 @@ _SRC_DIR = Path(__file__).resolve().parent / "src"
 if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-# Re-exported for mock compatibility in existing unit tests
+# Re-exported so legacy callers that used album_selector.util keep working
 import sentence_transformers.util as util
 
 from photo_curator.cli import logger, main
